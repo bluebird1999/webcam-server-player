@@ -11,8 +11,10 @@
  * header
  */
 //system header
-#include "player.h"
-
+#include <stdlib.h>
+#include <string.h>
+#include <dirent.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <pthread.h>
 #include <signal.h>
@@ -20,8 +22,10 @@
 #include <rtscamkit.h>
 #include <rtsavapi.h>
 #include <rtsvideo.h>
+#include <mp4v2/mp4v2.h>
 #include <malloc.h>
 #include <dmalloc.h>
+#include <miss.h>
 //program header
 #include "../../manager/manager_interface.h"
 #include "../../server/realtek/realtek_interface.h"
@@ -30,8 +34,10 @@
 #include "../../server/miio/miio_interface.h"
 #include "../../server/video/video_interface.h"
 #include "../../server/audio/audio_interface.h"
-#include "../../server/device/device_interface.h"
+#include "../../server/recorder/recorder_interface.h"
+#include "../../server/miss/miss_interface.h"
 //server header
+#include "player.h"
 #include "config.h"
 #include "player_interface.h"
 
@@ -41,11 +47,9 @@
 //variable
 static 	message_buffer_t		message;
 static 	server_info_t 			info;
-static	player_config_t		config;
-static 	message_buffer_t		video_buff;
-static 	message_buffer_t		audio_buff;
-static 	player_job_t			jobs[MAX_PLAYER_JOB];
-static	int						sw[MAX_PLAYER_JOB];
+static  player_config_t			config;
+static	player_job_t			job;
+static	player_file_list_t		flist;
 
 //function
 //common
@@ -56,28 +60,10 @@ static void task_default(void);
 static void task_error(void);
 //specific
 static int player_main(void);
-static int player_send_ack(message_t *msg, int id, int receiver, int result, void *arg, int size);
 static int player_send_message(int receiver, message_t *msg);
-static int player_add_job( message_t* msg );
-static int count_job_number(void);
-static int *player_func(void *arg);
-static int player_func_init_mp4v2( player_job_t *ctrl);
-static int player_write_mp4_video( player_job_t *ctrl, message_t *msg );
-static int player_func_close( player_job_t *ctrl );
-static int player_check_finish( player_job_t *ctrl );
-static int player_func_error( player_job_t *ctrl);
-static int player_func_pause( player_job_t *ctrl);
-static int player_destroy( player_job_t *ctrl );
-static int player_func_start_stream( player_job_t *ctrl );
-static int player_func_stop_stream( player_job_t *ctrl );
-static int player_check_and_exit_stream( player_job_t *ctrl );
-static int count_job_other_live(int myself);
-static int player_start_init_player_job(void);
-static int player_process_direct_ctrl(message_t *msg);
 static int send_iot_ack(message_t *org_msg, message_t *msg, int id, int receiver, int result, void *arg, int size);
-static int send_message(int receiver, message_t *msg);
 static int player_get_iot_config(player_iot_config_t *tmp);
-static int player_quit_all(int id);
+static int player_interrupt(void);
 /*
  * %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
  * %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -87,22 +73,152 @@ static int player_quit_all(int id);
 /*
  * helper
  */
-static int player_quit_all(int id)
+int player_read_file_list(char *basePath, char *prefix)
+{
+	struct dirent **namelist;
+	int n;
+	char name[MAX_SYSTEM_STRING_SIZE*8];
+	char *p = NULL;
+	memset(name, 0, sizeof(name));
+	sprintf(name, "%s%s", basePath, prefix);
+	n = scandir(name, &namelist, 0, alphasort);
+	if(n < 0) {
+	    log_err("Open dir error");
+	    return -1;
+	}
+	int index=0;
+	while(index < n) {
+        if(namelist[index]->d_type == 10) goto exit;
+        else if(namelist[index]->d_type == 4) goto exit;
+		if( strstr(namelist[index]->d_name,".mp4") == NULL ) {
+			//remove file here.
+			remove( namelist[index]->d_name );
+			goto exit;
+		}
+//		else if(strcmp(namelist[index]->d_name,".")==0 || strcmp(namelist[index]->d_name,"..")==0) goto exit;
+        else if(namelist[index]->d_type == 8) {
+        	p = strstr( namelist[index]->d_name, "202");	//first
+        	if( p == NULL) goto exit;
+        	memset(name, 0, sizeof(name));
+        	memcpy(name, p, 14);
+        	long long int st,ed;
+        	st = time_date_to_stamp( name );
+        	p+=15;
+        	memset(name, 0, sizeof(name));
+        	memcpy(name, p, 14);
+        	ed = time_date_to_stamp( name );
+        	if( st >= ed ) goto exit;
+        	flist.start[flist.num] = st;
+        	flist.stop[flist.num] = ed;
+        	flist.num ++;
+        }
+exit:
+		free(namelist[index]);
+	    index++;
+	}
+	free(namelist);
+    return 0;
+}
+
+static int player_node_remove_last(player_list_node_t *head)
+{
+    int ret = 0;
+    player_list_node_t *current = head;
+    if (head->next == NULL) {
+        ret = head->data;
+        free(head);
+        return 0;
+    }
+    while (current->next->next != NULL) {
+        current = current->next;
+    }
+    free(current->next);
+    current->next = NULL;
+    return 0;
+}
+
+static int player_node_clear(void)
 {
 	int ret = 0;
+	if( job.fhead == NULL) return ret;
+    while( job.fhead->next != NULL)
+        player_node_remove_last( job.fhead);
+    player_node_remove_last( job.fhead );
+    job.fhead = NULL;
+    return ret;
+}
+
+static int player_node_insert(int val)
+{
+	player_list_node_t *current;
+    player_list_node_t *node = malloc(sizeof(player_list_node_t));
+    node->data = val;
+    node->next = NULL;
+    if( job.fhead == NULL ) job.fhead = node;
+    else {
+        for (current = job.fhead; current->next != NULL; current = current->next);
+    	current->next = node;
+    }
+    return 0;
+}
+
+static int player_file_bisearch_start(long long key)
+{
+    int low = 0, mid, high = flist.num - 1;
+    if( flist.start[0] > key) return -1;
+    while (low <= high) {
+        mid = (low + high) / 2;
+        if (key < flist.start[mid]) {
+            high = mid - 1;
+        }
+        else if (key > flist.start[mid]) {
+            low = mid + 1;
+        }
+        else {
+        	return mid;
+        }
+    }
+    if( key > flist.start[low] )
+    	return low;
+    else
+    	return low - 1;
+}
+
+static int player_file_bisearch_stop(long long key)
+{
+    int low = 0, mid, high = flist.num - 1;
+    if( flist.stop[ flist.num - 1 ] < key) return flist.num -1 ;
+    while (low <= high) {
+        mid = (low + high) / 2;
+        if (key < flist.stop[mid]) {
+            high = mid - 1;
+        }
+        else if (key > flist.stop[mid]) {
+            low = mid + 1;
+        }
+        else {
+        	return mid;
+        }
+    }
+    if( key < flist.stop[low] )
+    	return low;
+    else
+    	return low + 1;
+}
+
+static int player_search_file_list(long long start, long long end)
+{
+	int ret = 0, start_index, stop_index;
 	int i;
-	ret = pthread_rwlock_wrlock(&info.lock);
-	if(ret)	{
-		log_err("add message lock fail, ret = %d\n", ret);
-		return ret;
-	}
-	for( i=0; i<MAX_PLAYER_JOB; i++ ) {
-		if( id !=-1 && i!=id ) continue;
-		sw[i] = 1;
-	}
-	ret = pthread_rwlock_unlock(&info.lock);
-	if (ret) {
-		log_err("add message unlock fail, ret = %d\n", ret);
+	player_node_clear();
+	if( flist.num <= 0) return -1;
+	start_index = player_file_bisearch_start(start);
+	stop_index = player_file_bisearch_stop(end);
+	if( start_index<0 || stop_index<0 ) return -1;
+	if( (start_index > (flist.num-1)) || (stop_index > (flist.num-1)) ) return -1;
+	if( start_index > stop_index ) return -1;
+	for(i=start_index;i<=stop_index;i++) {
+		player_node_insert(i);
 	}
 	return ret;
 }
@@ -113,44 +229,15 @@ static int send_iot_ack(message_t *org_msg, message_t *msg, int id, int receiver
     /********message body********/
 	msg_init(msg);
 	memcpy(&(msg->arg_pass), &(org_msg->arg_pass),sizeof(message_arg_t));
+	memcpy(&(msg->arg_in), &(org_msg->arg_in),sizeof(message_arg_t));
 	msg->message = id | 0x1000;
 	msg->sender = msg->receiver = SERVER_PLAYER;
 	msg->result = result;
 	msg->arg = arg;
 	msg->arg_size = size;
-	ret = send_message(receiver, msg);
+	ret = player_send_message(receiver, msg);
 	/***************************/
 	return ret;
-}
-
-static int send_message(int receiver, message_t *msg)
-{
-	int st;
-	switch(receiver) {
-	case SERVER_DEVICE:
-		break;
-	case SERVER_KERNEL:
-		break;
-	case SERVER_REALTEK:
-		break;
-	case SERVER_MIIO:
-		st = server_miio_message(msg);
-		break;
-	case SERVER_MISS:
-		st = server_miss_message(msg);
-		break;
-	case SERVER_MICLOUD:
-		break;
-	case SERVER_AUDIO:
-		st = server_audio_message(msg);
-		break;
-	case SERVER_PLAYER:
-		break;
-	case SERVER_MANAGER:
-		st = manager_message(msg);
-		break;
-	}
-	return st;
 }
 
 static int player_get_iot_config(player_iot_config_t *tmp)
@@ -158,495 +245,7 @@ static int player_get_iot_config(player_iot_config_t *tmp)
 	int ret = 0, st;
 	memset(tmp,0,sizeof(player_iot_config_t));
 	st = info.status;
-	if( st <= STATUS_WAIT ) return -1;
-	tmp->local_save = config.profile.enable;
-	tmp->recording_mode = config.profile.mode;
-	return ret;
-}
-
-static int player_process_direct_ctrl(message_t *msg)
-{
-	int ret=0;
-	message_t send_msg;
-	if( msg->arg_in.cat == PLAYER_CTRL_LOCAL_SAVE ) {
-		int temp = *((int*)(msg->arg));
-		if( temp != config.profile.enable) {
-			if( config.profile.enable == 1 ) {
-				player_quit_all(-1);
-				info.status = STATUS_WAIT;
-			}
-			config.profile.enable = temp;
-			log_info("changed the enable = %d", config.profile.enable);
-			config_player_set(CONFIG_PLAYER_PROFILE, &config.profile);
-		}
-	}
-	else if( msg->arg_in.cat == PLAYER_CTRL_RECORDING_MODE ) {
-		int temp = *((int*)(msg->arg));
-		if( temp != config.profile.mode) {
-			config.profile.mode = temp;
-			log_info("changed the mode = %d", config.profile.mode);
-			config_player_set(CONFIG_PLAYER_PROFILE, &config.profile);
-		}
-	}
-	ret = send_iot_ack(msg, &send_msg, MSG_PLAYER_CTRL_DIRECT, msg->receiver, ret, 0, 0);
-	return ret;
-}
-
-static int player_start_init_player_job(void)
-{
-	message_t msg;
-	player_init_t init;
-	int ret=0;
-	/********message body********/
-	msg_init(&msg);
-	msg.message = MSG_PLAYER_ADD;
-	msg.sender = msg.receiver = SERVER_PLAYER;
-	init.mode = PLAYER_MODE_BY_TIME;
-	init.type = PLAYER_TYPE_NORMAL;
-	init.audio = config.profile.normal_audio;
-	memcpy( &(init.start),config.profile.normal_start, strlen(config.profile.normal_start));
-	memcpy( &(init.stop),config.profile.normal_end, strlen(config.profile.normal_end));
-	init.repeat = config.profile.normal_repeat;
-	init.repeat_interval = config.profile.normal_repeat_interval;
-	init.quality = config.profile.normal_quality;
-	msg.arg = &init;
-	msg.arg_size = sizeof(player_init_t);
-	ret = server_player_message(&msg);
-	/********message body********/
-	return ret;
-}
-
-static int player_func_start_stream( player_job_t *ctrl )
-{
-	message_t msg;
-    /********message body********/
-	memset(&msg,0,sizeof(message_t));
-	msg.message = MSG_VIDEO_START;
-	msg.sender = msg.receiver = SERVER_PLAYER;
-    if( server_video_message(&msg)!=0 ) {
-    	log_err("video start failed from player!");
-    }
-    if( ctrl->init.audio ) {
-		memset(&msg,0,sizeof(message_t));
-		msg.message = MSG_AUDIO_START;
-		msg.sender = msg.receiver = SERVER_PLAYER;
-		if( server_audio_message(&msg)!=0 ) {
-			log_err("audio start failed from player!");
-		}
-    }
-    /****************************/
-}
-
-static int player_func_stop_stream( player_job_t *ctrl )
-{
-	message_t msg;
-    /********message body********/
-	memset(&msg,0,sizeof(message_t));
-	msg.message = MSG_VIDEO_STOP;
-	msg.sender = msg.receiver = SERVER_PLAYER;
-    if( server_video_message(&msg)!=0 ) {
-    	log_err("video stop failed from player!");
-    }
-    if( ctrl->init.audio ) {
-		memset(&msg,0,sizeof(message_t));
-		msg.message = MSG_AUDIO_STOP;
-		msg.sender = msg.receiver = SERVER_PLAYER;
-		if( server_audio_message(&msg)!=0 ) {
-			log_err("audio stop failed from player!");
-		}
-    }
-    /****************************/
-}
-
-static int player_check_finish( player_job_t *ctrl )
-{
-	int ret = 0;
-	long long int now = 0;
-	now = time_get_now_stamp();
-	if( now >= ctrl->run.stop )
-		ret = 1;
-	return ret;
-}
-
-static int player_func_close( player_job_t *ctrl )
-{
-	char oldname[MAX_SYSTEM_STRING_SIZE*2];
-	char start[MAX_SYSTEM_STRING_SIZE*2];
-	char stop[MAX_SYSTEM_STRING_SIZE*2];
-	char prefix[MAX_SYSTEM_STRING_SIZE];
-	int ret = 0;
-	if(ctrl->run.mp4_file != MP4_INVALID_FILE_HANDLE) {
-		log_info("+++MP4Close\n");
-		MP4Close(ctrl->run.mp4_file, MP4_CLOSE_DO_NOT_COMPUTE_BITRATE);
-	}
-	else {
-		return -1;
-	}
-	if( (ctrl->run.last_write - ctrl->run.real_start) < ctrl->config.profile.min_length ) {
-		log_info("Recording file %s is too short, removed!", ctrl->run.file_path);
-		//remove file here.
-		remove(ctrl->run.file_path);
-		return -1;
-	}
-	ctrl->run.real_stop = ctrl->run.last_write;
-	memset(oldname,0,sizeof(oldname));
-	memset(start,0,sizeof(start));
-	memset(stop,0,sizeof(stop));
-	memset(prefix,0,sizeof(prefix));
-	time_stamp_to_date(ctrl->run.real_start, start);
-	time_stamp_to_date(ctrl->run.last_write, stop);
-	strcpy(oldname, ctrl->run.file_path);
-	if( ctrl->init.type == PLAYER_TYPE_NORMAL)
-		strcpy( &prefix, ctrl->config.profile.normal_prefix);
-	else if( ctrl->init.type == PLAYER_TYPE_MOTION_DETECTION)
-		strcpy( &prefix, ctrl->config.profile.motion_prefix);
-	else if( ctrl->init.type == PLAYER_TYPE_ALARM)
-		strcpy( &prefix, ctrl->config.profile.alarm_prefix);
-	sprintf( ctrl->run.file_path, "%s%s/%s-%s_%s.mp4",ctrl->config.profile.directory,prefix,prefix,start,stop);
-	ret = rename(oldname, ctrl->run.file_path);
-	if(ret) {
-		log_err("rename recording file %s to %s failed.\n", oldname, ctrl->run.file_path);
-	}
-	else {
-		log_info("Record file is %s\n", ctrl->run.file_path);
-	}
-	return ret;
-}
-
-static int player_write_mp4_video( player_job_t *ctrl, message_t *msg )
-{
-	unsigned char *p_data = (unsigned char*)msg->extra;
-	unsigned int data_length = msg->extra_size;
-	av_data_info_t *info = (av_data_info_t*)(msg->arg);
-	nalu_unit_t nalu;
-	memset(&nalu, 0, sizeof(nalu_unit_t));
-	int pos = 0, len = 0;
-	while ( (len = h264_read_nalu(p_data, data_length, pos, &nalu)) != 0) {
-		switch ( nalu.type) {
-			case 0x07:
-				if ( ctrl->run.video_track == MP4_INVALID_TRACK_ID ) {
-					ctrl->run.video_track = MP4AddH264VideoTrack(ctrl->run.mp4_file, 90000,
-							90000 / info->fps,
-							info->width,
-							info->height,
-							nalu.data[1], nalu.data[2], nalu.data[3], 3);
-//					ctrl->run.video_track = MP4AddH264VideoTrack(ctrl->run.mp4_file, 90000, 90000/15, 800, 600,0x4d, 0x40, 0x1f, 3);
-					if( ctrl->run.video_track == MP4_INVALID_TRACK_ID ) {
-						return -1;
-					}
-					MP4SetVideoProfileLevel( ctrl->run.mp4_file, 0x7F);
-					MP4AddH264SequenceParameterSet( ctrl->run.mp4_file, ctrl->run.video_track, nalu.data, nalu.size);
-					}
-					break;
-			case 0x08:
-				if ( ctrl->run.video_track == MP4_INVALID_TRACK_ID)
-					break;
-				MP4AddH264PictureParameterSet(ctrl->run.mp4_file, ctrl->run.video_track, nalu.data, nalu.size);
-				break;
-			case 0x1:
-			case 0x5:
-				if ( ctrl->run.video_track == MP4_INVALID_TRACK_ID ) {
-					return -1;
-				}
-				int nlength = nalu.size + 4;
-				unsigned char *data = (unsigned char *)malloc(nlength);
-				if(!data) {
-					log_err("mp4_video_frame_write malloc failed\n");
-					return -1;
-				}
-				data[0] = nalu.size >> 24;
-				data[1] = nalu.size >> 16;
-				data[2] = nalu.size >> 8;
-				data[3] = nalu.size & 0xff;
-				memcpy(data + 4, nalu.data, nalu.size);
-				if (!MP4WriteSample(ctrl->run.mp4_file, ctrl->run.video_track, data, nlength, MP4_INVALID_DURATION, 0, 1)) {
-				  free(data);
-				  return -1;
-				}
-				free(data);
-			break;
-			  default :
-				  break;
-		}
-		pos += len;
-	}
-	return 0;
-}
-
-
-static int player_func_init_mp4v2( player_job_t *ctrl)
-{
-	int ret = 0;
-	char fname[MAX_SYSTEM_STRING_SIZE*2];
-	char prefix[MAX_SYSTEM_STRING_SIZE];
-	char timestr[MAX_SYSTEM_STRING_SIZE];
-	memset( fname, 0, sizeof(fname));
-	if( ctrl->init.type == PLAYER_TYPE_NORMAL)
-		strcpy( &prefix, ctrl->config.profile.normal_prefix);
-	else if( ctrl->init.type == PLAYER_TYPE_MOTION_DETECTION)
-		strcpy( &prefix, ctrl->config.profile.motion_prefix);
-	else if( ctrl->init.type == PLAYER_TYPE_ALARM)
-		strcpy( &prefix, ctrl->config.profile.alarm_prefix);
-	time_stamp_to_date(ctrl->run.start, timestr);
-	sprintf(fname,"%s%s/%s-%s",ctrl->config.profile.directory,prefix,prefix,timestr);
-	ctrl->run.mp4_file = MP4CreateEx(fname,	0, 1, 1, 0, 0, 0, 0);
-	if ( ctrl->run.mp4_file == MP4_INVALID_FILE_HANDLE) {
-		printf("MP4CreateEx file failed.\n");
-		return -1;
-	}
-	MP4SetTimeScale( ctrl->run.mp4_file, 90000);
-	if( ctrl->init.audio ) {
-		ctrl->run.audio_track = MP4AddALawAudioTrack( ctrl->run.mp4_file, ctrl->config.profile.quality[ctrl->init.quality].audio_sample);
-		if ( ctrl->run.audio_track == MP4_INVALID_TRACK_ID) {
-			printf("add audio track failed.\n");
-			return -1;
-		}
-		MP4SetTrackIntegerProperty( ctrl->run.mp4_file, ctrl->run.audio_track, "mdia.minf.stbl.stsd.alaw.channels", 1);
-		MP4SetTrackIntegerProperty( ctrl->run.mp4_file, ctrl->run.audio_track, "mdia.minf.stbl.stsd.alaw.sampleSize", 8);
-	}
-	memset( ctrl->run.file_path, 0, sizeof(ctrl->run.file_path));
-	strcpy(ctrl->run.file_path, fname);
-	return ret;
-}
-
-static int player_func_error( player_job_t *ctrl)
-{
-	int ret = 0;
-	log_err("errors in this player thread, stop!");
-	ctrl->run.exit = 1;
-	return ret;
-}
-
-static int player_func_pause( player_job_t *ctrl)
-{
-	int ret = 0;
-	long long int temp1 = 0, temp2 = 0;
-	if( ctrl->init.repeat==0 ) {
-		ctrl->run.exit = 1;
-		return 0;
-	}
-	else {
-		temp1 = ctrl->run.start;
-		temp2 = ctrl->run.stop;
-		memset( &ctrl->run, 0, sizeof( player_run_t));
-		ctrl->run.start = temp2 + ctrl->init.repeat_interval;
-		ctrl->run.stop = ctrl->run.start + (temp2 - temp1);
-		ctrl->status = PLAYER_THREAD_STARTED;
-		log_info("-------------add recursive player---------------------");
-		log_info("now=%ld", time_get_now_stamp());
-		log_info("start=%ld", ctrl->run.start);
-		log_info("end=%ld", ctrl->run.stop);
-		log_info("--------------------------------------------------");
-	}
-	if( time_get_now_stamp() < (ctrl->run.start - MAX_BETWEEN_RECODER_PAUSE) ) {
-		player_check_and_exit_stream(ctrl);
-	}
-	return ret;
-}
-
-static int player_func_run( player_job_t *ctrl)
-{
-	message_t		vmsg, amsg;
-	int 			ret_video = 1, 	ret_audio = 1, ret;
-	av_data_info_t *info;
-	unsigned char	*p;
-	char			flag;
-    //read video frame
-	ret = pthread_rwlock_wrlock(&video_buff.lock);
-	if(ret)	{
-		log_err("add message lock fail, ret = %d\n", ret);
-		return ERR_LOCK;
-	}
-	msg_init(&vmsg);
-	ret_video = msg_buffer_pop(&video_buff, &vmsg);
-	ret = pthread_rwlock_unlock(&video_buff.lock);
-	if (ret) {
-		log_err("add message unlock fail, ret = %d\n", ret);
-		ret = ERR_LOCK;
-		goto exit;
-	}
-    //read audio frame
-	if( ctrl->init.audio ) {
-		ret = pthread_rwlock_wrlock(&audio_buff.lock);
-		if(ret)	{
-			log_err("add message lock fail, ret = %d\n", ret);
-			ret = ERR_LOCK;
-			goto exit;
-		}
-		msg_init(&amsg);
-		ret_audio = msg_buffer_pop(&audio_buff, &amsg);
-		ret = pthread_rwlock_unlock(&audio_buff.lock);
-		if (ret) {
-			log_err("add message unlock fail, ret = %d\n", ret);
-			ret = ERR_LOCK;
-			goto exit;
-		}
-	}
-	if( ret_audio && ret_video ) {	//no data
-		usleep(10000);
-		ret = ERR_NO_DATA;
-		goto exit;
-	}
-	if ( !ret_audio ) {
-		info = (av_data_info_t*)(amsg.arg);
-		p = (unsigned char*)amsg.extra;
-		if( !MP4WriteSample( ctrl->run.mp4_file, ctrl->run.audio_track, p, amsg.extra_size , 320, 0, 1) ) {
-			log_err("MP4WriteSample audio failed.\n");
-			ret = ERR_NO_DATA;
-		}
-		ctrl->run.last_write = time_get_now_stamp();
-	}
-	if( !ret_video ) {
-		info = (av_data_info_t*)(vmsg.arg);
-		p = (unsigned char*)vmsg.extra;
-		flag = p[4];
-		if( !ctrl->run.i_frame_read ) {
-			if( flag != 0x41  ) {
-				ctrl->run.i_frame_read = 1;
-				ctrl->run.real_start = time_get_now_stamp();
-				ctrl->run.fps = info->fps;
-				ctrl->run.width = info->width;
-				ctrl->run.height = info->height;
-			}
-			else {
-				ret = ERR_NO_DATA;
-				goto exit;
-			}
-		}
-/*		if( flag==0x41 ) {
-			ret = ERR_NO_DATA;
-			goto exit;
-		}*/
-		if( info->fps != ctrl->run.fps) {
-			log_err("the video fps has changed, stop recording!");
-			ret = ERR_ERROR;
-			goto close_exit;
-		}
-		if( info->width != ctrl->run.width || info->height != ctrl->run.height ) {
-			log_err("the video dimention has changed, stop recording!");
-			ret = ERR_ERROR;
-			goto close_exit;
-		}
-		ret = player_write_mp4_video( ctrl, &vmsg );
-		if(ret < 0) {
-			log_err("MP4WriteSample video failed.\n");
-			ret = ERR_NO_DATA;
-			goto exit;
-		}
-		ctrl->run.last_write = time_get_now_stamp();
-		if( player_check_finish(ctrl) ) {
-			log_info("------------stop=%d------------", time_get_now_stamp());
-			log_info("recording finished!");
-			goto close_exit;
-		}
-	}
-exit:
-	if( !ret_video )
-		msg_free(&vmsg);
-    if( !ret_audio )
-    	msg_free(&amsg);
-    return ret;
-close_exit:
-	ret = player_func_close(ctrl);
-	if( !ret )
-		ctrl->status = PLAYER_THREAD_PAUSE;
-	else
-		ctrl->status = PLAYER_THREAD_PAUSE;
-	if( !ret_video )
-		msg_free(&vmsg);
-    if( !ret_audio )
-    	msg_free(&amsg);
-    return ret;
-}
-
-static int player_func_started( player_job_t *ctrl )
-{
-	int ret;
-	if( time_get_now_stamp() >= ctrl->run.start ) {
-		log_info("------------start=%ld------------", time_get_now_stamp());
-		ret = player_func_init_mp4v2( ctrl );
-		if( ret ) {
-			log_err("init mp4v2 failed!");
-			ctrl->status = PLAYER_THREAD_ERROR;
-		}
-		else {
-			ctrl->status = PLAYER_THREAD_RUN;
-			player_func_start_stream( ctrl );
-		}
-	}
-	else
-		usleep(1000);
-	return ret;
-}
-
-static int *player_func(void *arg)
-{
-	player_job_t ctrl;
-	memcpy(&ctrl, (player_job_t*)arg, sizeof(player_job_t));
-    misc_set_thread_name("server_player_");
-    pthread_detach(pthread_self());
-
-    ctrl.status = PLAYER_THREAD_STARTED;
-    while( !info.exit && !ctrl.run.exit && !sw[ctrl.t_id] ) {
-    	switch( ctrl.status ) {
-    		case PLAYER_THREAD_STARTED:
-    			player_func_started(&ctrl);
-    			break;
-    		case PLAYER_THREAD_RUN:
-    			player_func_run(&ctrl);
-    			break;
-    		case PLAYER_THREAD_PAUSE:
-    			player_func_pause(&ctrl);
-    			break;
-    		case PLAYER_THREAD_ERROR:
-    			player_func_error(&ctrl);
-    			break;
-    	}
-    }
-    //release
-    player_destroy(&ctrl);
-    log_info("-----------thread exit: server_player_-----------");
-    pthread_exit(0);
-}
-
-static int player_check_and_exit_stream( player_job_t *ctrl )
-{
-	int ret=0,ret1;
-	int i;
-	ret = pthread_rwlock_wrlock(&info.lock);
-	if(ret)	{
-		log_err("add message lock fail, ret = %d\n", ret);
-		return ret;
-	}
-	if( !count_job_other_live(ctrl->t_id) ) {
-		player_func_stop_stream( ctrl );
-	}
-	ret1 = pthread_rwlock_unlock(&info.lock);
-	if (ret1)
-		log_err("add message unlock fail, ret = %d\n", ret1);
-	return ret;
-}
-
-static int player_destroy( player_job_t *ctrl )
-{
-	int ret=0,ret1;
-	int i;
-	ret = pthread_rwlock_wrlock(&info.lock);
-	if(ret)	{
-		log_err("add message lock fail, ret = %d\n", ret);
-		return ret;
-	}
-	player_func_close( ctrl );
-	misc_set_bit(&info.thread_start, ctrl->t_id, 0);
-	if( info.thread_start == 0) {
-		player_func_stop_stream( ctrl );
-	}
-	memset(ctrl, 0, sizeof(player_job_t));
-	memset(&jobs[ctrl->t_id], 0, sizeof(player_job_t));
-	sw[ctrl->t_id] = 0;
-	ret1 = pthread_rwlock_unlock(&info.lock);
-	if (ret1)
-		log_err("add message unlock fail, ret = %d\n", ret1);
+	if( st < STATUS_WAIT ) return -1;
 	return ret;
 }
 
@@ -679,103 +278,409 @@ static int player_send_message(int receiver, message_t *msg)
 	}
 }
 
-static int player_send_ack(message_t *msg, int id, int receiver, int result, void *arg, int size)
+static int player_init( message_t* msg )
 {
+	message_t send_msg;
 	int ret = 0;
-    /********message body********/
-	msg_init(msg);
-	msg->message = id | 0x1000;
-	msg->sender = msg->receiver = SERVER_PLAYER;
-	msg->result = result;
-	msg->arg = arg;
-	msg->arg_size = size;
-	ret = player_send_message(receiver, msg);
-	/***************************/
+	if( config.profile.enable == 0 ) goto error;
+	player_interrupt();
+	job.init.auto_exit = ((player_iot_config_t*)msg->arg)->want_to_stop;
+	job.init.speed = ((player_iot_config_t*)msg->arg)->speed;
+	job.init.start = ((player_iot_config_t*)msg->arg)->start;
+	job.init.stop= ((player_iot_config_t*)msg->arg)->end;
+	job.init.channel_merge = ((player_iot_config_t*)msg->arg)->channel_merge;
+	job.init.offset = ((player_iot_config_t*)msg->arg)->offset;
+	job.init.switch_to_live = ((player_iot_config_t*)msg->arg)->switch_to_live;
+	if( job.init.stop <= job.init.start ) goto error;
+	if( job.init.start == 0 ) goto error;
+	if( player_search_file_list(job.init.start, job.init.stop) != 0) goto error;
+	log_info("------------add new player setting----------------");
+	log_info("now=%ld", time_get_now_stamp());
+	log_info("start=%ld", job.init.start);
+	log_info("end=%ld", job.init.stop);
+	log_info("--------------------------------------------------");
+	ret = 0;
+	return ret;
+error:
+	ret = -1;
 	return ret;
 }
 
-static int count_job_other_live(int myself)
+static int player_get_video_frame(void)
 {
-	int i,num=0;
-	for( i=0; i<MAX_PLAYER_JOB; i++ ) {
-		if( (jobs[i].status>0) && (i!=myself) )
-			num++;
-	}
-	return num;
-}
-
-static int count_job_number(void)
-{
-	int i,num=0;
-	for( i=0; i<MAX_PLAYER_JOB; i++ ) {
-		if( jobs[i].status>0 )
-			num++;
-	}
-	return num;
-}
-
-static int player_add_job( message_t* msg )
-{
-	message_t send_msg;
-	int i=-1;
-	int ret = 0;
-	if( count_job_number() == MAX_PLAYER_JOB) {
-		player_send_ack( &send_msg, msg->message, msg->receiver, -1, 0, 0);
-		return -1;
-	}
-	for(i = 0;i<MAX_PLAYER_JOB;i++) {
-		if( jobs[i].status == PLAYER_THREAD_NONE ) {
-			memcpy( &jobs[i].init, msg->arg, sizeof(player_init_t));
-			if (jobs[i].init.start[0] == '0') jobs[i].run.start = time_get_now_stamp();
-			else jobs[i].run.start = time_date_to_stamp(jobs[i].init.start);
-			if (jobs[i].init.stop[0] == '0') jobs[i].run.stop = jobs[i].run.start + config.profile.max_length;
-			else jobs[i].run.stop = time_date_to_stamp(jobs[i].init.stop);
-			if( (jobs[i].run.stop - jobs[i].run.start) < config.profile.min_length ||
-					(jobs[i].run.stop - jobs[i].run.start) > config.profile.max_length )
-				jobs[i].run.stop = jobs[i].run.start + jobs[i].config.profile.max_length;
-			jobs[i].status = PLAYER_THREAD_INITED;
-			log_info("-------------add new player---------------------");
-			log_info("now=%ld", time_get_now_stamp());
-			log_info("start=%ld", jobs[i].run.start);
-			log_info("end=%ld", jobs[i].run.stop);
-			log_info("--------------------------------------------------");
-			break;
+	char NAL[5] = {0x00,0x00,0x00,0x01};
+    unsigned char *data = NULL;
+    unsigned char *p = NULL;
+    unsigned int size = 0, num = 0, framesize;
+    MP4Timestamp start_time;
+    MP4Duration duration;
+    MP4Duration offset;
+    char iframe = 0;
+	int ret=0;
+	int	flag=0;
+	message_t msg;
+	av_data_info_t	info;
+	int sample_time;
+    if( !job.run.mp4_file ) return -1;
+    if( job.run.video_index >= job.run.video_frame_num) return -1;
+    sample_time = MP4GetSampleTime( job.run.mp4_file, job.run.video_track, job.run.video_index );
+	sample_time = sample_time * 1000 / job.run.video_timescale;
+	iframe = 0;
+    ret = MP4ReadSample( job.run.mp4_file, job.run.video_track, job.run.video_index,
+    		&data,&size,&start_time,&duration,&offset,&iframe);
+    if( !ret ) {
+    	if(data) free(data);
+    	job.run.video_index++;
+    	return -1;
+    }
+    if( !job.run.i_frame_read && !iframe ) {
+    	if(data) free(data);
+    	job.run.video_index++;
+    	return 0;
+    }
+	if( size > 0){
+		start_time = start_time * 1000 / job.run.video_timescale;
+		offset = offset * 1000 / job.run.video_timescale;
+		if( job.run.stop ) {
+			if( ( start_time / 1000 + job.run.start) > job.run.stop ) {
+				return -1;
+			}
+		}
+//		log_info("@@@@@reading video frame length=%d, duration = %d, start =%d@@@@@", size, sample_time, start_time);
+		if( !job.run.i_frame_read && iframe ) {
+		    /********message body********/
+			unsigned char *mdata = NULL;
+			mdata = calloc( (size + job.run.slen + job.run.plen + 8), 1);
+			if( mdata == NULL) {
+				log_err("calloc error, size = %d", (size + job.run.slen + job.run.plen + 8));
+				return -1;
+			}
+			p = mdata;
+			memcpy(p, NAL, 4); p+=4;
+			memcpy(p, job.run.sps, job.run.slen); p+=job.run.slen;
+			memcpy(p, NAL, 4); p+=4;
+			memcpy(p, job.run.pps, job.run.plen); p+=job.run.plen;
+			memcpy(p, data, size);
+			memcpy(p, NAL, 4);
+			log_info("first key frame.");
+			/***************************/
+			msg_init(&msg);
+			msg.message = MSG_MISS_VIDEO_DATA;
+			msg.extra = mdata;
+			msg.extra_size = (size + job.run.slen + job.run.plen + 8);
+			info.frame_index = job.run.video_index;
+			info.timestamp = start_time;
+		   	info.flag |= FLAG_STREAM_TYPE_PLAYBACK << 11;
+	    	info.flag |= FLAG_FRAME_TYPE_IFRAME << 0;
+		    info.flag |= FLAG_RESOLUTION_VIDEO_480P << 17;
+			msg.arg = &info;
+			msg.arg_size = sizeof(av_data_info_t);
+			ret = server_miss_video_message(&msg);
+			/****************************/
+			job.run.i_frame_read = 1;
+			free(mdata);
+		}
+		else {
+			if( ((data[4] & 0x1f) == 0x07) || ((data[4] & 0x1f) == 0x08) ) { //not sending any psp pps
+				free(data);
+				job.run.video_index++;
+				return 0;
+			}
+			data[0] = 0x00;
+			data[1] = 0x00;
+			data[2] = 0x00;
+			data[3] = 0x01;
+			/********message body********/
+			msg_init(&msg);
+			msg.message = MSG_MISS_VIDEO_DATA;
+			msg.extra = data;
+			msg.extra_size = size;
+			info.frame_index = job.run.video_index;
+			info.timestamp = start_time;
+		   	info.flag |= FLAG_STREAM_TYPE_PLAYBACK << 11;
+		    if( iframe )// I frame
+		    	info.flag |= FLAG_FRAME_TYPE_IFRAME << 0;
+		    else
+		    	info.flag |= FLAG_FRAME_TYPE_PBFRAME << 0;
+		    info.flag |= FLAG_RESOLUTION_VIDEO_480P << 17;
+			msg.arg = &info;
+			msg.arg_size = sizeof(av_data_info_t);
+			ret = server_miss_video_message(&msg);
+			/****************************/
+			job.run.video_sync = start_time;
 		}
 	}
-	player_send_ack( &send_msg, msg->message, msg->receiver, 0, 0, 0);
+	job.run.video_index++;
+	free(data);
+	usleep(10000);
+    return 0;
+}
+
+static int player_get_audio_frame( void )
+{
+    unsigned char *data = NULL;
+    unsigned char *p = NULL;
+    unsigned int size = 0, num = 0, framesize;
+    MP4Timestamp start_time;
+    MP4Duration duration;
+    MP4Duration offset;
+    char iframe = 0;
+	int ret=0;
+	int	flag=0;
+	message_t msg;
+	av_data_info_t	info;
+	int sample_time;
+    if( !job.run.mp4_file ) return -1;
+    if( job.run.audio_index >= job.run.audio_frame_num) return -1;
+    sample_time = MP4GetSampleTime( job.run.mp4_file, job.run.audio_track, job.run.audio_index );
+	sample_time = sample_time * 1000 / job.run.audio_timescale;
+	iframe = 0;
+    ret = MP4ReadSample( job.run.mp4_file, job.run.audio_track, job.run.audio_index,
+    		&data,&size,&start_time,&duration,&offset,&iframe);
+    if( !ret ) {
+    	if(data) free(data);
+    	job.run.audio_index++;
+    	return -1;
+    }
+    if( !job.run.i_frame_read ) {
+    	if(data) free(data);
+    	job.run.audio_index++;
+    	return 0;
+    }
+	if( size > 0){
+		start_time = start_time * 1000 / job.run.audio_timescale;
+		offset = offset * 1000 / job.run.audio_timescale;
+		if( job.run.stop ) {
+			if( ( start_time / 1000 + job.run.start) > job.run.stop ) {
+				return -1;
+			}
+		}
+//		log_info("@@@@@reading audio frame length=%d, duration = %d, start =%d@@@@@", size, sample_time, start_time);
+		/********message body********/
+		msg_init(&msg);
+		msg.message = MSG_MISS_AUDIO_DATA;
+		msg.sender = msg.receiver = SERVER_PLAYER;
+		msg.extra = data;
+		msg.extra_size = size;
+		info.frame_index = job.run.audio_index;
+		info.timestamp = start_time;
+		info.flag = FLAG_AUDIO_SAMPLE_8K << 3 | FLAG_AUDIO_DATABITS_8 << 7 | FLAG_AUDIO_CHANNEL_MONO << 9 |  FLAG_RESOLUTION_AUDIO_DEFAULT << 17;
+		msg.arg = &info;
+		msg.arg_size = sizeof(av_data_info_t);
+		ret = server_miss_audio_message(&msg);
+		/****************************/
+		job.run.audio_sync = start_time;
+	}
+	job.run.audio_index++;
+	free(data);
+	usleep(10000);
+    return 0;
+}
+
+static int player_open_mp4(void)
+{
+    int i, num_tracks;
+    int diff, sample_time;
+	unsigned char	**sps_header = NULL;
+	unsigned char  	**pps_header = NULL;
+	unsigned int	*sps_size = NULL;
+	unsigned int	*pps_size = NULL;
+	char start_str[MAX_SYSTEM_STRING_SIZE], stop_str[MAX_SYSTEM_STRING_SIZE];
+	if( job.init.current == NULL)
+		job.init.current = job.fhead;
+	else
+		job.init.current = job.init.current->next;
+	if( job.run.mp4_file == NULL ) {
+		memset( job.run.file_path, 0 ,sizeof(job.run.file_path));
+		memset( start_str, 0, sizeof(start_str));
+		memset( stop_str, 0, sizeof(stop_str));
+		time_stamp_to_date( flist.start[job.init.current->data], start_str);
+		time_stamp_to_date( flist.stop[job.init.current->data], stop_str);
+		sprintf( job.run.file_path , "%s%s_%s.mp4",config.profile.name_prefix,start_str, stop_str);
+	}
+	else
+		return 0;
+    job.run.mp4_file = MP4Read( job.run.file_path );
+    if ( !job.run.mp4_file ) {
+        log_err("Read error....%s", job.run.file_path);
+        return -1;
+    }
+    log_info("$%$%$%opened file %s$%$%$%", job.run.file_path);
+    if( job.init.current == job.fhead ) {
+    	job.run.start = job.init.start;
+    }
+    else {
+    	job.run.start = flist.start[job.init.current->data];
+    }
+    if( job.init.current->next == NULL ) job.run.stop = job.init.stop;
+    	else job.run.stop = 0;
+    job.run.video_track = MP4_INVALID_TRACK_ID;
+    num_tracks = MP4GetNumberOfTracks( job.run.mp4_file, NULL, 0);
+    for (i = 0; i < num_tracks; i++) {
+    	MP4TrackId id = MP4FindTrackId(job.run.mp4_file, i, NULL,0);
+        char* type = MP4GetTrackType( job.run.mp4_file, id );
+        if( MP4_IS_VIDEO_TRACK_TYPE( type ) ) {
+        	job.run.video_track	= id;
+            job.run.duration = MP4GetTrackDuration( job.run.mp4_file, id );
+            job.run.video_frame_num = MP4GetTrackNumberOfSamples( job.run.mp4_file, id );
+            job.run.video_timescale = MP4GetTrackTimeScale( job.run.mp4_file, id);
+            job.run.fps = MP4GetTrackVideoFrameRate(job.run.mp4_file, id);
+            job.run.width = MP4GetTrackVideoWidth(job.run.mp4_file, id);
+            job.run.height = MP4GetTrackVideoHeight(job.run.mp4_file, id);
+            log_info("video codec = %s", MP4GetTrackMediaDataName(job.run.mp4_file, id));
+            job.run.video_index = 1;
+            //sps pps
+			char result = MP4GetTrackH264SeqPictHeaders(job.run.mp4_file, id, &sps_header, &sps_size,
+					&pps_header, &pps_size);
+			memset( job.run.sps, 0, sizeof(job.run.sps));
+			job.run.slen = 0;
+            for (i = 0; sps_size[i] != 0; i++) {
+            	if( strlen(job.run.sps)<=0 && sps_size[i]>0 ) {
+            		memcpy( job.run.sps, sps_header[i], sps_size[i]);
+                	job.run.slen = sps_size[i];
+            	}
+                free(sps_header[i]);
+            }
+            free(sps_header);
+            free(sps_size);
+            memset( job.run.pps, 0, sizeof(job.run.pps));
+            job.run.plen = 0;
+            for (i = 0; pps_size[i] != 0; i++) {
+            	if( strlen(job.run.pps)<=0 && pps_size[i]>0 ) {
+            		memcpy( job.run.pps, pps_header[i], pps_size[i]);
+                	job.run.plen = pps_size[i];
+            	}
+                free(pps_header[i]);
+            }
+			free(pps_header);
+			free(pps_size);
+        } else if (MP4_IS_AUDIO_TRACK_TYPE( type )) {
+			job.run.audio_track = id;
+			job.run.audio_frame_num = MP4GetTrackNumberOfSamples( job.run.mp4_file, id);
+			job.run.audio_timescale = MP4GetTrackTimeScale( job.run.mp4_file, id);
+//			job.run.audio_codec = MP4GetTrackAudioMpeg4Type( job.run.mp4_file, id);
+			log_info("audio codec = %s", MP4GetTrackMediaDataName(job.run.mp4_file, id));
+			job.run.audio_index = 1;
+        }
+    }
+    //seek
+    diff = (flist.start[job.init.current->data] - job.run.start) * 1000;
+    for( i=1;i<=job.run.video_frame_num;i++) {
+        sample_time = MP4GetSampleTime( job.run.mp4_file, job.run.video_track, i );
+        sample_time = sample_time * 1000 / job.run.video_timescale;
+    	if ( ( diff + sample_time ) >= 0 ) {
+    		if( i>1 ) job.run.video_index = i;
+    		else job.run.video_index = 1;
+    		break;
+    	}
+    }
+    for( i=1;i<=job.run.audio_frame_num;i++) {
+        sample_time = MP4GetSampleTime( job.run.mp4_file, job.run.audio_track, i );
+        sample_time = sample_time * 1000 / job.run.audio_timescale;
+    	if ( ( diff + sample_time ) >= 0 ) {
+    		if( i>1 ) job.run.audio_index = i;
+    		else job.run.audio_index = 1;
+    		break;
+    	}
+    }
+    return 0;
+}
+
+static int player_close_mp4(void)
+{
+	int ret = 0;
+	if( job.run.mp4_file ) {
+		MP4Close( job.run.mp4_file, 0);
+		log_info("$%$%$%closed file %s$%$%$%", job.run.file_path);
+		memset( &job.run, 0, sizeof(player_run_t));
+	}
+	return ret;
+}
+
+static int player_start(void)
+{
+	int ret = 0;
 	return ret;
 }
 
 static int player_main(void)
 {
-	int ret = 0, i;
-	if( !config.profile.enable )
-		return ret;
-	for( i=0; i<MAX_PLAYER_JOB; i++) {
-		switch( jobs[i].status ) {
-			case PLAYER_THREAD_INITED:
-				//start the thread
-				jobs[i].t_id = i;
-				memcpy( &(jobs[i].config), &config, sizeof(player_config_t));
-				pthread_rwlock_init(&jobs[i].run.lock, NULL);
-				ret = pthread_create(&jobs[i].run.pid, NULL, player_func, (void*)&jobs[i]);
-				if(ret != 0) {
-					log_err("player thread create error! ret = %d",ret);
-					jobs[i].status = PLAYER_THREAD_NONE;
-				 }
-				else {
-					log_info("player thread create successful!");
-					misc_set_bit(&info.thread_start,i,1);
-					jobs[i].status = PLAYER_THREAD_STARTED;
-				}
-				break;
-			case PLAYER_THREAD_STARTED:
-				break;
-			case PLAYER_THREAD_ERROR:
-				break;
-		}
-		usleep(1000);
+	int ret = 0;
+	int ret_video, ret_audio;
+	if( job.run.mp4_file == NULL ) {
+		ret = player_open_mp4();
+		if( ret )
+			goto next_stream;
 	}
+	if( !job.run.vstream_wait )
+		ret_video = player_get_video_frame();
+	if( !job.run.astream_wait )
+		ret_audio = player_get_audio_frame();
+	if( job.run.i_frame_read ) {
+		if( job.run.video_sync > job.run.audio_sync + DEFAULT_SYNC_DURATION ) {
+			job.run.vstream_wait = 1;
+			job.run.astream_wait = 0;
+		}
+		else if( job.run.audio_sync > job.run.video_sync + DEFAULT_SYNC_DURATION ) {
+			job.run.astream_wait = 1;
+			job.run.vstream_wait = 0;
+		}
+		else {
+			job.run.astream_wait = 0;
+			job.run.vstream_wait = 0;
+		}
+	}
+	if( ret_video!=0 || ret_audio!=0 ) {
+		job.run.astream_wait = 0;
+		job.run.vstream_wait = 0;
+	}
+	if( ret_video && ret_audio ) {
+		goto next_stream;
+	}
+	return 0;
+next_stream:
+	player_close_mp4();
+//	job.run.start = flist.stop[job.init.current->data];
+	if( job.init.current->next == NULL ) {
+		ret = -1;
+	}
+/*	else {
+		job.init.current = job.init.current->next;
+		if( job.init.current->next == NULL)
+			job.run.stop = job.init.stop;
+		else
+			job.run.stop = 0;
+	}
+*/
+	return ret;
+}
+
+static int player_interrupt(void)
+{
+	int ret = 0;
+	if( info.status == STATUS_RUN ) {
+		player_close_mp4();
+	}
+	memset(&job, 0, sizeof(player_job_t));
+	info.status = STATUS_IDLE;
+	return ret;
+}
+
+static int player_stop(void)
+{
+	message_t msg;
+	int ret;
+    /********message body********/
+	msg_init(&msg);
+	memcpy(&msg.arg_pass,&info.task.msg.arg_pass, sizeof(message_arg_t));
+	msg.arg_pass.cat = msg.arg_pass.cat + 1;	//trick here!!!
+	msg.message = MSG_PLAYER_STOP_ACK;
+	msg.sender = msg.receiver = SERVER_PLAYER;
+	msg.arg_in.cat = job.init.switch_to_live;
+	ret = server_miss_message(&msg);
+	/****************************/
+	memset(&job, 0, sizeof(player_job_t));
+	info.status = STATUS_IDLE;
 	return ret;
 }
 
@@ -794,12 +699,9 @@ static int server_release(void)
 {
 	int ret = 0;
 	msg_buffer_release(&message);
-	msg_buffer_release(&video_buff);
-	msg_buffer_release(&audio_buff);
 	msg_free(&info.task.msg);
 	memset(&info,0,sizeof(server_info_t));
 	memset(&config,0,sizeof(player_config_t));
-	memset(&jobs,0,sizeof(player_job_t));
 	return ret;
 }
 
@@ -808,6 +710,7 @@ static int server_message_proc(void)
 	int ret = 0, ret1 = 0;
 	message_t msg,send_msg;
 	player_iot_config_t tmp;
+	char	name[MAX_SYSTEM_STRING_SIZE];
 	msg_init(&msg);
 	ret = pthread_rwlock_wrlock(&message.lock);
 	if(ret)	{
@@ -830,39 +733,30 @@ static int server_message_proc(void)
 	else if( ret == 1)
 		return 0;
 	switch(msg.message) {
-		case MSG_PLAYER_ADD:
-			if( player_add_job(&msg) ) ret = -1;
+		case MSG_PLAYER_START:
+			if( (info.status != STATUS_IDLE) && (info.status != STATUS_RUN) ) ret = -1;
+			else if( player_init(&msg) ) ret = -1;
 			else ret = 0;
-			player_send_ack(&send_msg, MSG_PLAYER_ADD, msg.receiver, ret, 0, 0);
+			msg.arg_in.cat = job.init.switch_to_live;
+			send_iot_ack(&msg, &send_msg, MSG_PLAYER_START, msg.receiver, ret,
+					NULL, 0);
+			if( !ret ) info.status = STATUS_START;
+			memcpy(&info.task.msg, &msg,sizeof(message_t));
 			break;
-		case MSG_PLAYER_ADD_ACK:
+		case MSG_PLAYER_STOP:
+			msg.arg_in.cat = job.init.switch_to_live;
+			if( info.status != STATUS_RUN ) ret = 0;
+			else {
+				ret = player_interrupt();
+			}
+			send_iot_ack(&msg, &send_msg, MSG_PLAYER_STOP, msg.receiver, ret,
+					NULL, 0);
 			break;
 		case MSG_MANAGER_EXIT:
 			info.exit = 1;
 			break;
 		case MSG_MANAGER_TIMER_ACK:
 			((HANDLER)msg.arg_in.handler)();
-			break;
-		case MSG_DEVICE_GET_PARA_ACK:
-			if( !msg.result ) {
-				if( ((device_iot_config_t*)msg.arg)->sd_iot_info.plug &&
-						(((device_iot_config_t*)msg.arg)->sd_iot_info.freeBytes * 1024 > MIN_SD_SIZE_IN_MB) ) {
-					if( info.status == STATUS_WAIT ) {
-						misc_set_bit( &info.thread_exit, PLAYER_INIT_CONDITION_DEVICE_CONFIG, 1);
-					}
-					else if( info.status == STATUS_IDLE )
-						info.status = STATUS_START;
-				}
-				else {
-					if( info.status == STATUS_RUN ) {
-						player_quit_all(-1);
-						info.status = STATUS_WAIT;
-					}
-				}
-			}
-			break;
-		case MSG_PLAYER_CTRL_DIRECT:
-			player_process_direct_ctrl(&msg);
 			break;
 		case MSG_PLAYER_GET_PARA:
 			ret = player_get_iot_config(&tmp);
@@ -872,8 +766,29 @@ static int server_message_proc(void)
 		case MSG_MIIO_TIME_SYNCHRONIZED:
 			misc_set_bit( &info.thread_exit, PLAYER_INIT_CONDITION_MIIO_TIME, 1);
 			break;
+		case MSG_RECORDER_GET_PARA_ACK:
+			if( !msg.result ) {
+				sprintf( config.profile.name_prefix, "%s%s/%s-", ((recorder_iot_config_t*)(msg.arg))->directory,
+						((recorder_iot_config_t*)(msg.arg))->normal_prefix,
+						((recorder_iot_config_t*)(msg.arg))->normal_prefix );
+				misc_set_bit( &info.thread_exit, PLAYER_INIT_CONDITION_RECORDER_CONFIG, 1);
+				if( !player_read_file_list( ((recorder_iot_config_t*)(msg.arg))->directory,
+						((recorder_iot_config_t*)(msg.arg))->normal_prefix ) ) {
+					misc_set_bit( &info.thread_exit, PLAYER_INIT_CONDITION_FILE_LIST, 1);
+				}
+			}
+			break;
+		case MSG_RECORDER_ADD_FILE:
+			if( info.status >= STATUS_SETUP ) {
+	        	memset(name, 0, sizeof(name));
+	        	memcpy(name, (char*)(msg.arg), 14);
+	        	flist.start[flist.num] = time_date_to_stamp( name );
+	        	memset(name, 0, sizeof(name));
+	        	memcpy(name, &( ((char*)msg.arg)[14] ), 14);
+	        	flist.stop[flist.num] = time_date_to_stamp( name );
+			}
+			break;
 		default:
-			log_err("not processed message = %d", msg.message);
 			break;
 	}
 	msg_free(&msg);
@@ -894,6 +809,7 @@ static int heart_beat_proc(void)
 		msg.sender = msg.receiver = SERVER_PLAYER;
 		msg.arg_in.cat = info.status;
 		msg.arg_in.dog = info.thread_start;
+		msg.arg_in.duck = info.thread_exit;
 		ret = manager_message(&msg);
 		/***************************/
 	}
@@ -926,7 +842,6 @@ static void task_error(void)
 	usleep(1000);
 	return;
 }
-
 /*
  * default task: none->run
  */
@@ -934,42 +849,48 @@ static void task_default(void)
 {
 	message_t msg;
 	int ret = 0;
+	player_iot_config_t player;
 	switch( info.status){
 		case STATUS_NONE:
-			ret = config_player_read(&config);
-			if( !ret && misc_full_bit(config.status, CONFIG_PLAYER_MODULE_NUM) ) {
-				misc_set_bit(&info.thread_exit, PLAYER_INIT_CONDITION_CONFIG, 1);
+			if( !misc_get_bit( info.thread_exit, PLAYER_INIT_CONDITION_CONFIG ) ) {
+				ret = config_player_read(&config);
+				if( !ret && misc_full_bit(config.status, CONFIG_PLAYER_MODULE_NUM) ) {
+					misc_set_bit(&info.thread_exit, PLAYER_INIT_CONDITION_CONFIG, 1);
+				}
+				else {
+					info.status = STATUS_ERROR;
+					break;
+				}
 			}
-			else {
-				info.status = STATUS_ERROR;
+			if( !misc_get_bit( info.thread_exit, PLAYER_INIT_CONDITION_RECORDER_CONFIG) ) {
+			    /********message body********/
+				msg_init(&msg);
+				msg.message = MSG_RECORDER_GET_PARA;
+				msg.sender = msg.receiver = SERVER_PLAYER;
+				ret = server_recorder_message(&msg);
+				/***************************/
+				sleep(1);
 				break;
 			}
-			/********message body********/
-			msg.message = MSG_DEVICE_GET_PARA;
-			msg.sender = msg.receiver = SERVER_PLAYER;
-			msg.arg_in.cat = DEVICE_CTRL_SD_INFO;
-			ret = server_device_message(&msg);
-			/****************************/
-			info.status = STATUS_WAIT;
+			if( misc_full_bit( info.thread_exit, PLAYER_INIT_CONDITION_NUM ) )
+				info.status = STATUS_WAIT;
+			else
+				usleep(100000);
 			break;
 		case STATUS_WAIT:
-			if( misc_full_bit(info.thread_exit, PLAYER_INIT_CONDITION_NUM))
-				info.status = STATUS_SETUP;
-			else usleep(1000);
+			info.status = STATUS_SETUP;
 			break;
 		case STATUS_SETUP:
 			info.status = STATUS_IDLE;
 			break;
 		case STATUS_IDLE:
-			if( config.profile.enable )
-				info.status = STATUS_START;
 			break;
 		case STATUS_START:
-			player_start_init_player_job();
+			player_start();
 			info.status = STATUS_RUN;
 			break;
 		case STATUS_RUN:
-			if( player_main() ) info.status = STATUS_ERROR;
+			if( player_main() ) player_stop();
 			break;
 		case STATUS_STOP:
 			info.status = STATUS_IDLE;
@@ -1030,8 +951,6 @@ int server_player_start(void)
 	int ret=-1;
 	msg_buffer_init(&message, MSG_BUFFER_OVERFLOW_NO);
 	pthread_rwlock_init(&info.lock, NULL);
-	pthread_rwlock_init(&video_buff.lock, NULL);
-	pthread_rwlock_init(&audio_buff.lock, NULL);
 	ret = pthread_create(&info.id, NULL, server_func, NULL);
 	if(ret != 0) {
 		log_err("player server create error! ret = %d",ret);
@@ -1056,40 +975,6 @@ int server_player_message(message_t *msg)
 	if( ret!=0 )
 		log_err("message push in player error =%d", ret);
 	ret1 = pthread_rwlock_unlock(&message.lock);
-	if (ret1)
-		log_err("add message unlock fail, ret = %d\n", ret1);
-	return ret;
-}
-
-int server_player_video_message(message_t *msg)
-{
-	int ret=0,ret1;
-	ret = pthread_rwlock_wrlock(&video_buff.lock);
-	if(ret)	{
-		log_err("add message lock fail, ret = %d\n", ret);
-		return ret;
-	}
-	ret = msg_buffer_push(&video_buff, msg);
-	if( ret!=0 )
-		log_err("message push in player error =%d", ret);
-	ret1 = pthread_rwlock_unlock(&video_buff.lock);
-	if (ret1)
-		log_err("add message unlock fail, ret = %d\n", ret1);
-	return ret;
-}
-
-int server_player_audio_message(message_t *msg)
-{
-	int ret=0,ret1=0;
-	ret = pthread_rwlock_wrlock(&audio_buff.lock);
-	if(ret)	{
-		log_err("add message lock fail, ret = %d\n", ret);
-		return ret;
-	}
-	ret = msg_buffer_push(&audio_buff, msg);
-	if( ret!=0 )
-		log_err("message push in player error =%d", ret);
-	ret1 = pthread_rwlock_unlock(&audio_buff.lock);
 	if (ret1)
 		log_err("add message unlock fail, ret = %d\n", ret1);
 	return ret;
