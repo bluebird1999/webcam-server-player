@@ -30,7 +30,8 @@ typedef struct player_profile_config_t {
 	char				offset;
 	char				speed;
 	char				channel_merge;
-	char   				name_prefix[MAX_SYSTEM_STRING_SIZE*2];
+	char   				path[MAX_SYSTEM_STRING_SIZE*2];
+	char   				prefix[MAX_SYSTEM_STRING_SIZE];
 } player_profile_config_t;
 
 typedef struct player_config_t {
