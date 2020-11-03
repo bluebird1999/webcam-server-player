@@ -18,7 +18,7 @@
 #define		CONFIG_PLAYER_MODULE_NUM			1
 #define		CONFIG_PLAYER_PROFILE				0
 
-#define 	CONFIG_PLAYER_PROFILE_PATH			"/opt/qcy/config/player_profile.config"
+#define 	CONFIG_PLAYER_PROFILE_PATH			"config/player_profile.config"
 
 /*
  * structure

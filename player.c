@@ -24,7 +24,6 @@
 #include <rtsvideo.h>
 #include <mp4v2/mp4v2.h>
 #include <malloc.h>
-#include <dmalloc.h>
 #include <miss.h>
 //program header
 #include "../../manager/manager_interface.h"
@@ -117,7 +116,7 @@ static int send_message(int receiver, message_t *msg)
 			st = manager_message(msg);
 			break;
 		default:
-			log_err("unknown message target! %d", receiver);
+			log_qcy(DEBUG_SERIOUS, "unknown message target! %d", receiver);
 			break;
 	}
 	return st;
@@ -131,7 +130,7 @@ int player_read_file_list(char *path)
 	char *p = NULL;
 	n = scandir(path, &namelist, 0, alphasort);
 	if(n < 0) {
-	    log_err("Open dir error");
+	    log_qcy(DEBUG_SERIOUS, "Open dir error");
 	    return -1;
 	}
 	int index=0;
@@ -287,11 +286,11 @@ static int player_init( message_t* msg )
 	if( job.init.stop <= job.init.start ) goto error;
 	if( job.init.start == 0 ) goto error;
 	if( player_search_file_list(job.init.start, job.init.stop) != 0) goto error;
-	log_info("------------add new player setting----------------");
-	log_info("now=%ld", time_get_now_stamp());
-	log_info("start=%ld", job.init.start);
-	log_info("end=%ld", job.init.stop);
-	log_info("--------------------------------------------------");
+	log_qcy(DEBUG_SERIOUS, "------------add new player setting----------------");
+	log_qcy(DEBUG_SERIOUS, "now=%ld", time_get_now_stamp());
+	log_qcy(DEBUG_SERIOUS, "start=%ld", job.init.start);
+	log_qcy(DEBUG_SERIOUS, "end=%ld", job.init.stop);
+	log_qcy(DEBUG_SERIOUS, "--------------------------------------------------");
 	ret = 0;
 	return ret;
 error:
@@ -339,13 +338,13 @@ static int player_get_video_frame(void)
 				return -1;
 			}
 		}
-//		log_info("@@@@@reading video frame length=%d, duration = %d, start =%d@@@@@", size, sample_time, start_time);
+//		log_qcy(DEBUG_SERIOUS, "@@@@@reading video frame length=%d, duration = %d, start =%d@@@@@", size, sample_time, start_time);
 		if( !job.run.i_frame_read && iframe ) {
 		    /********message body********/
 			unsigned char *mdata = NULL;
 			mdata = calloc( (size + job.run.slen + job.run.plen + 8), 1);
 			if( mdata == NULL) {
-				log_err("calloc error, size = %d", (size + job.run.slen + job.run.plen + 8));
+				log_qcy(DEBUG_SERIOUS, "calloc error, size = %d", (size + job.run.slen + job.run.plen + 8));
 				return -1;
 			}
 			p = mdata;
@@ -355,7 +354,7 @@ static int player_get_video_frame(void)
 			memcpy(p, job.run.pps, job.run.plen); p+=job.run.plen;
 			memcpy(p, data, size);
 			memcpy(p, NAL, 4);
-			log_info("first key frame.");
+			log_qcy(DEBUG_SERIOUS, "first key frame.");
 			/***************************/
 			msg_init(&msg);
 			msg.message = MSG_MISS_VIDEO_DATA;
@@ -448,7 +447,7 @@ static int player_get_audio_frame( void )
 				return -1;
 			}
 		}
-//		log_info("@@@@@reading audio frame length=%d, duration = %d, start =%d@@@@@", size, sample_time, start_time);
+//		log_qcy(DEBUG_SERIOUS, "@@@@@reading audio frame length=%d, duration = %d, start =%d@@@@@", size, sample_time, start_time);
 		/********message body********/
 		msg_init(&msg);
 		msg.message = MSG_MISS_AUDIO_DATA;
@@ -495,10 +494,10 @@ static int player_open_mp4(void)
 		return 0;
     job.run.mp4_file = MP4Read( job.run.file_path );
     if ( !job.run.mp4_file ) {
-        log_err("Read error....%s", job.run.file_path);
+        log_qcy(DEBUG_SERIOUS, "Read error....%s", job.run.file_path);
         return -1;
     }
-    log_info("$%$%$%opened file %s$%$%$%", job.run.file_path);
+    log_qcy(DEBUG_SERIOUS, "$%$%$%opened file %s$%$%$%", job.run.file_path);
     if( job.init.current == job.fhead ) {
     	job.run.start = job.init.start;
     }
@@ -520,7 +519,7 @@ static int player_open_mp4(void)
             job.run.fps = MP4GetTrackVideoFrameRate(job.run.mp4_file, id);
             job.run.width = MP4GetTrackVideoWidth(job.run.mp4_file, id);
             job.run.height = MP4GetTrackVideoHeight(job.run.mp4_file, id);
-            log_info("video codec = %s", MP4GetTrackMediaDataName(job.run.mp4_file, id));
+            log_qcy(DEBUG_SERIOUS, "video codec = %s", MP4GetTrackMediaDataName(job.run.mp4_file, id));
             job.run.video_index = 1;
             //sps pps
 			char result = MP4GetTrackH264SeqPictHeaders(job.run.mp4_file, id, &sps_header, &sps_size,
@@ -552,7 +551,7 @@ static int player_open_mp4(void)
 			job.run.audio_frame_num = MP4GetTrackNumberOfSamples( job.run.mp4_file, id);
 			job.run.audio_timescale = MP4GetTrackTimeScale( job.run.mp4_file, id);
 //			job.run.audio_codec = MP4GetTrackAudioMpeg4Type( job.run.mp4_file, id);
-			log_info("audio codec = %s", MP4GetTrackMediaDataName(job.run.mp4_file, id));
+			log_qcy(DEBUG_SERIOUS, "audio codec = %s", MP4GetTrackMediaDataName(job.run.mp4_file, id));
 			job.run.audio_index = 1;
         }
     }
@@ -584,7 +583,7 @@ static int player_close_mp4(void)
 	int ret = 0;
 	if( job.run.mp4_file ) {
 		MP4Close( job.run.mp4_file, 0);
-		log_info("$%$%$%closed file %s$%$%$%", job.run.file_path);
+		log_qcy(DEBUG_SERIOUS, "$%$%$%closed file %s$%$%$%", job.run.file_path);
 		memset( &job.run, 0, sizeof(player_run_t));
 	}
 	return ret;
@@ -708,7 +707,7 @@ static int server_message_proc(void)
 	msg_init(&msg);
 	ret = pthread_rwlock_wrlock(&message.lock);
 	if(ret)	{
-		log_err("add message lock fail, ret = %d\n", ret);
+		log_qcy(DEBUG_SERIOUS, "add message lock fail, ret = %d\n", ret);
 		return ret;
 	}
 	if( info.msg_lock ) {
@@ -718,7 +717,7 @@ static int server_message_proc(void)
 	ret = msg_buffer_pop(&message, &msg);
 	ret1 = pthread_rwlock_unlock(&message.lock);
 	if (ret1) {
-		log_err("add message unlock fail, ret = %d\n", ret1);
+		log_qcy(DEBUG_SERIOUS, "add message unlock fail, ret = %d\n", ret1);
 	}
 	if( ret == -1) {
 		msg_free(&msg);
@@ -789,7 +788,7 @@ static int server_message_proc(void)
 			}
 			break;
 		default:
-			log_err("not processed message = %d", msg.message);
+			log_qcy(DEBUG_SERIOUS, "not processed message = %d", msg.message);
 			break;
 	}
 	msg_free(&msg);
@@ -828,19 +827,19 @@ static void task_error(void)
 	unsigned int tick=0;
 	switch( info.status ) {
 		case STATUS_ERROR:
-			log_err("!!!!!!!!error in player, restart in 5 s!");
-			info.tick = time_get_now_stamp();
+			log_qcy(DEBUG_SERIOUS, "!!!!!!!!error in player, restart in 5 s!");
+			info.tick3 = time_get_now_stamp();
 			info.status = STATUS_NONE;
 			break;
 		case STATUS_NONE:
 			tick = time_get_now_stamp();
-			if( (tick - info.tick) > SERVER_RESTART_PAUSE ) {
+			if( (tick - info.tick3) > SERVER_RESTART_PAUSE ) {
 				info.exit = 1;
-				info.tick = tick;
+				info.tick3 = tick;
 			}
 			break;
 		default:
-			log_err("!!!!!!!unprocessed server status in task_error = %d", info.status);
+			log_qcy(DEBUG_SERIOUS, "!!!!!!!unprocessed server status in task_error = %d", info.status);
 			break;
 	}
 	usleep(1000);
@@ -866,7 +865,9 @@ static void task_default(void)
 					break;
 				}
 			}
-			if( !misc_get_bit( info.thread_exit, PLAYER_INIT_CONDITION_MIIO_TIME ) ) {
+			if( !misc_get_bit( info.thread_exit, PLAYER_INIT_CONDITION_MIIO_TIME )
+					&& (info.tick2 - time_get_now_stamp()) > MESSAGE_RESENT ) {
+				info.tick2 = time_get_now_stamp();
 			    /********message body********/
 				msg_init(&msg);
 				msg.message = MSG_MIIO_PROPERTY_GET;
@@ -875,7 +876,9 @@ static void task_default(void)
 				server_miio_message(&msg);
 				/****************************/
 			}
-			if( !misc_get_bit( info.thread_exit, PLAYER_INIT_CONDITION_RECORDER_CONFIG) ) {
+			if( !misc_get_bit( info.thread_exit, PLAYER_INIT_CONDITION_RECORDER_CONFIG)
+				&& (info.tick2 - time_get_now_stamp()) > MESSAGE_RESENT ) {
+				info.tick2 = time_get_now_stamp();
 			    /********message body********/
 				msg_init(&msg);
 				msg.message = MSG_RECORDER_PROPERTY_GET;
@@ -886,8 +889,6 @@ static void task_default(void)
 			}
 			if( misc_full_bit( info.thread_exit, PLAYER_INIT_CONDITION_NUM ) )
 				info.status = STATUS_WAIT;
-			else
-				sleep(1);
 			break;
 		case STATUS_WAIT:
 			info.status = STATUS_SETUP;
@@ -911,7 +912,7 @@ static void task_default(void)
 			info.task.func = task_error;
 			break;
 		default:
-			log_err("!!!!!!!unprocessed server status in task_default = %d", info.status);
+			log_qcy(DEBUG_SERIOUS, "!!!!!!!unprocessed server status in task_default = %d", info.status);
 			break;
 		}
 	usleep(1000);
@@ -937,8 +938,7 @@ static void *server_func(void)
 	while( !info.exit ) {
 		info.task.func();
 		server_message_proc();
-		if( info.status!=STATUS_ERROR )
-			heart_beat_proc();
+		heart_beat_proc();
 	}
 	if( info.exit ) {
 		while( info.thread_start ) {
@@ -952,7 +952,7 @@ static void *server_func(void)
 		/***************************/
 	}
 	server_release();
-	log_info("-----------thread exit: server_player-----------");
+	log_qcy(DEBUG_SERIOUS, "-----------thread exit: server_player-----------");
 	pthread_exit(0);
 }
 
@@ -968,11 +968,11 @@ int server_player_start(void)
 	int ret=-1;
 	ret = pthread_create(&info.id, NULL, server_func, NULL);
 	if(ret != 0) {
-		log_err("player server create error! ret = %d",ret);
+		log_qcy(DEBUG_SERIOUS, "player server create error! ret = %d",ret);
 		 return ret;
 	 }
 	else {
-		log_err("player server create successful!");
+		log_qcy(DEBUG_SERIOUS, "player server create successful!");
 		return 0;
 	}
 }
@@ -981,20 +981,21 @@ int server_player_message(message_t *msg)
 {
 	int ret=0,ret1;
 	if( !message.init ) {
-		log_err("player server is not ready for message processing!");
+		log_qcy(DEBUG_SERIOUS, "player server is not ready for message processing!");
 		return -1;
 	}
 	ret = pthread_rwlock_wrlock(&message.lock);
 	if(ret)	{
-		log_err("add message lock fail, ret = %d\n", ret);
+		log_qcy(DEBUG_SERIOUS, "add message lock fail, ret = %d\n", ret);
 		return ret;
 	}
 	ret = msg_buffer_push(&message, msg);
-	log_info("push into the player message queue: sender=%d, message=%x, ret=%d", msg->sender, msg->message, ret);
+	log_qcy(DEBUG_SERIOUS, "push into the player message queue: sender=%d, message=%x, ret=%d, head=%d, tail=%d", msg->sender, msg->message, ret,
+			message.head, message.tail);
 	if( ret!=0 )
-		log_err("message push in player error =%d", ret);
+		log_qcy(DEBUG_SERIOUS, "message push in player error =%d", ret);
 	ret1 = pthread_rwlock_unlock(&message.lock);
 	if (ret1)
-		log_err("add message unlock fail, ret = %d\n", ret1);
+		log_qcy(DEBUG_SERIOUS, "add message unlock fail, ret = %d\n", ret1);
 	return ret;
 }

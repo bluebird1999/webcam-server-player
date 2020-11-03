@@ -12,7 +12,6 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <malloc.h>
-#include <dmalloc.h>
 //program header
 #include "../../tools/tools_interface.h"
 #include "../../manager/manager_interface.h"
@@ -51,13 +50,16 @@ static int player_config_save(void)
 {
 	int ret = 0;
 	message_t msg;
+	char fname[MAX_SYSTEM_STRING_SIZE*2];
 	ret = pthread_rwlock_wrlock(&lock);
 	if(ret)	{
-		log_err("add lock fail, ret = %d\n", ret);
+		log_qcy(DEBUG_SERIOUS, "add lock fail, ret = %d\n", ret);
 		return ret;
 	}
+	memset(fname,0,sizeof(fname));
+	sprintf(fname,"%s%s",_config_.qcy_path, CONFIG_PLAYER_PROFILE_PATH);
 	if( misc_get_bit(dirty, CONFIG_PLAYER_PROFILE) ) {
-		ret = write_config_file(&player_config_profile_map, CONFIG_PLAYER_PROFILE_PATH);
+		ret = write_config_file(&player_config_profile_map, fname);
 		if(!ret)
 			misc_set_bit(&dirty, CONFIG_PLAYER_PROFILE, 0);
 	}
@@ -71,7 +73,7 @@ static int player_config_save(void)
 	}
 	ret = pthread_rwlock_unlock(&lock);
 	if (ret)
-		log_err("add unlock fail, ret = %d\n", ret);
+		log_qcy(DEBUG_SERIOUS, "add unlock fail, ret = %d\n", ret);
 
 	return ret;
 }
@@ -79,13 +81,16 @@ static int player_config_save(void)
 int config_player_read(player_config_t *rconfig)
 {
 	int ret,ret1=0;
+	char fname[MAX_SYSTEM_STRING_SIZE*2];
 	pthread_rwlock_init(&lock, NULL);
 	ret = pthread_rwlock_wrlock(&lock);
 	if(ret)	{
-		log_err("add lock fail, ret = %d\n", ret);
+		log_qcy(DEBUG_SERIOUS, "add lock fail, ret = %d\n", ret);
 		return ret;
 	}
-	ret = read_config_file(&player_config_profile_map, CONFIG_PLAYER_PROFILE_PATH);
+	memset(fname,0,sizeof(fname));
+	sprintf(fname,"%s%s",_config_.qcy_path, CONFIG_PLAYER_PROFILE_PATH);
+	ret = read_config_file(&player_config_profile_map, fname);
 	if(!ret)
 		misc_set_bit(&player_config.status, CONFIG_PLAYER_PROFILE,1);
 	else
@@ -93,7 +98,7 @@ int config_player_read(player_config_t *rconfig)
 	ret1 |= ret;
 	ret = pthread_rwlock_unlock(&lock);
 	if (ret)
-		log_err("add unlock fail, ret = %d\n", ret);
+		log_qcy(DEBUG_SERIOUS, "add unlock fail, ret = %d\n", ret);
 	ret1 |= ret;
 	memcpy(rconfig,&player_config,sizeof(player_config_t));
 	return ret1;
@@ -104,7 +109,7 @@ int config_player_set(int module, void *arg)
 	int ret = 0;
 	ret = pthread_rwlock_wrlock(&lock);
 	if(ret)	{
-		log_err("add lock fail, ret = %d\n", ret);
+		log_qcy(DEBUG_SERIOUS, "add lock fail, ret = %d\n", ret);
 		return ret;
 	}
 	if(dirty==0) {
@@ -126,7 +131,7 @@ int config_player_set(int module, void *arg)
 	}
 	ret = pthread_rwlock_unlock(&lock);
 	if (ret)
-		log_err("add unlock fail, ret = %d\n", ret);
+		log_qcy(DEBUG_SERIOUS, "add unlock fail, ret = %d\n", ret);
 	return ret;
 }
 
@@ -135,7 +140,7 @@ int config_player_get_config_status(int module)
 	int st,ret=0;
 	ret = pthread_rwlock_wrlock(&lock);
 	if(ret)	{
-		log_err("add lock fail, ret = %d\n", ret);
+		log_qcy(DEBUG_SERIOUS, "add lock fail, ret = %d\n", ret);
 		return ret;
 	}
 	if(module==-1)
@@ -144,6 +149,6 @@ int config_player_get_config_status(int module)
 		st = misc_get_bit(player_config.status, module);
 	ret = pthread_rwlock_unlock(&lock);
 	if (ret)
-		log_err("add unlock fail, ret = %d\n", ret);
+		log_qcy(DEBUG_SERIOUS, "add unlock fail, ret = %d\n", ret);
 	return st;
 }
