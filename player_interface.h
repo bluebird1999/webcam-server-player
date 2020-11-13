@@ -20,7 +20,7 @@
 /*
  * define
  */
-#define		SERVER_PLAYER_VERSION_STRING		"alpha-3.5"
+#define		SERVER_PLAYER_VERSION_STRING		"alpha-3.6"
 
 #define		MSG_PLAYER_BASE						(SERVER_PLAYER<<16)
 #define		MSG_PLAYER_SIGINT					(MSG_PLAYER_BASE | 0x0000)
@@ -29,6 +29,8 @@
 #define		MSG_PLAYER_START_ACK				(MSG_PLAYER_BASE | 0x1010)
 #define		MSG_PLAYER_STOP						(MSG_PLAYER_BASE | 0x0011)
 #define		MSG_PLAYER_STOP_ACK					(MSG_PLAYER_BASE | 0x1011)
+#define		MSG_PLAYER_GET_FILE_LIST			(MSG_PLAYER_BASE | 0x0012)
+#define		MSG_PLAYER_GET_FILE_LIST_ACK		(MSG_PLAYER_BASE | 0x1012)
 
 //control command
 
@@ -45,6 +47,11 @@ typedef struct player_iot_config_t {
 	int					want_to_stop;
 	int					channel_merge;
 } player_iot_config_t;
+
+typedef struct player_file_item_t {
+	unsigned long long start;
+	unsigned long long stop;
+} player_file_item_t;
 
 /*
  * function

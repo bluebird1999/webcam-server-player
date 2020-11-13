@@ -122,6 +122,43 @@ static int send_message(int receiver, message_t *msg)
 	return st;
 }
 
+static int player_get_file_list(message_t *msg)
+{
+	int ret = 0, i;
+	player_file_item_t *file;
+	message_t send_msg;
+    /********message body********/
+	msg_init(&send_msg);
+	memcpy(&(send_msg.arg_pass), &(msg->arg_pass),sizeof(message_arg_t));
+	send_msg.message = msg->message | 0x1000;
+	send_msg.sender = send_msg.receiver = SERVER_PLAYER;
+	/****************************/
+	file = calloc(flist.num, sizeof(player_file_item_t));
+	if(file == NULL) {
+		log_qcy(DEBUG_SERIOUS, "Fail to calloc file list item = %d", flist.num);
+		ret = -1;
+	}
+	else if( misc_get_bit( info.thread_exit, PLAYER_INIT_CONDITION_FILE_LIST)==0 ) {
+		ret = -1;
+	}
+	else {
+		for (i = 0; i < flist.num; i++) {
+			file[i].start = flist.start[i];
+			file[i].stop = flist.stop[i];
+		}
+		send_msg.arg_in.cat = RECORDER_TYPE_NORMAL;
+		send_msg.arg_in.dog = flist.num;
+		send_msg.arg_in.duck = 1;
+		send_msg.arg = file;
+		send_msg.arg_size = flist.num * sizeof(player_file_item_t);
+	}
+	send_msg.result = ret;
+	send_message(msg->sender, &send_msg);
+	if( file )
+		free(file);
+	return ret;
+}
+
 int player_read_file_list(char *path)
 {
 	struct dirent **namelist;
@@ -130,7 +167,7 @@ int player_read_file_list(char *path)
 	char *p = NULL;
 	n = scandir(path, &namelist, 0, alphasort);
 	if(n < 0) {
-	    log_qcy(DEBUG_SERIOUS, "Open dir error");
+	    log_qcy(DEBUG_SERIOUS, "Open dir error %s", path);
 	    return -1;
 	}
 	int index=0;
@@ -787,8 +824,11 @@ static int server_message_proc(void)
 	        	flist.stop[flist.num] = time_date_to_stamp( name );
 			}
 			break;
+		case MSG_PLAYER_GET_FILE_LIST:
+			ret = player_get_file_list(&msg);
+			break;
 		default:
-			log_qcy(DEBUG_SERIOUS, "not processed message = %d", msg.message);
+			log_qcy(DEBUG_SERIOUS, "not processed message = %x", msg.message);
 			break;
 	}
 	msg_free(&msg);
