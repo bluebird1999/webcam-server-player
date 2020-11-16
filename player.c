@@ -122,40 +122,141 @@ static int send_message(int receiver, message_t *msg)
 	return st;
 }
 
-static int player_get_file_list(message_t *msg)
+static int player_get_file_date(message_t *msg)
 {
 	int ret = 0, i;
-	player_file_item_t *file;
+	unsigned int *file;
 	message_t send_msg;
+	int num = 0;
+	unsigned long long int init = 0;
+	char newdate[MAX_SYSTEM_STRING_SIZE];
     /********message body********/
 	msg_init(&send_msg);
 	memcpy(&(send_msg.arg_pass), &(msg->arg_pass),sizeof(message_arg_t));
 	send_msg.message = msg->message | 0x1000;
 	send_msg.sender = send_msg.receiver = SERVER_PLAYER;
 	/****************************/
-	file = calloc(flist.num, sizeof(player_file_item_t));
-	if(file == NULL) {
-		log_qcy(DEBUG_SERIOUS, "Fail to calloc file list item = %d", flist.num);
+	if( misc_get_bit( info.thread_exit, PLAYER_INIT_CONDITION_FILE_LIST)==0 ) {
 		ret = -1;
+		goto send;
 	}
-	else if( misc_get_bit( info.thread_exit, PLAYER_INIT_CONDITION_FILE_LIST)==0 ) {
+	else {
+		init = 0;
+		for (i = 0; i < flist.num; i++) {
+			if( init == 0) {
+				memset(newdate, 0, sizeof(newdate));
+				time_stamp_to_date( flist.start[i], newdate);
+				strcpy(&newdate[8], "000000");
+				init = time_date_to_stamp(newdate);
+//				init-= _config_.timezone * 3600;
+				num++;
+				continue;
+			}
+			if( (flist.start[i] >= init) && (flist.start[i] < ( init + 86400 ) ) ) continue;
+			else if( flist.start[i] >= (init+86400) ) {
+				init = init + ( (int)( ( flist.start[i] - ( init + 86400 ) ) / 86400 ) + 1 ) * 86400;
+				num++;
+			}
+		}
+		file = calloc(num, sizeof(unsigned int));
+		if(file == NULL) {
+			log_qcy(DEBUG_SERIOUS, "Fail to calloc file list item = %d", num);
+			ret = -1;
+			goto send;
+		}
+		init = 0;
+		num = 0;
+		for (i = 0; i < flist.num; i++) {
+			if( init == 0) {
+				memset(newdate, 0, sizeof(newdate));
+				time_stamp_to_date( flist.start[i], newdate);
+				strcpy(&newdate[8], "000000");
+				init = time_date_to_stamp(newdate);
+//				init-= _config_.timezone * 3600;
+				newdate[8] = '\0';
+				file[num] = atoi(newdate);
+				num++;
+				continue;
+			}
+			if( (flist.start[i] >= init) && (flist.start[i] < ( init + 86400 ) ) ) continue;
+			else if( flist.start[i] >= (init+86400) ) {
+				init = init + ( (int)( ( flist.start[i] - ( init + 86400 ) ) / 86400 ) + 1 ) * 86400;
+				memset(newdate, 0, sizeof(newdate));
+				time_stamp_to_date( init, newdate);
+				newdate[8] = '\0';
+				file[num] = atoi(newdate);
+				num++;
+			}
+		}
+		send_msg.arg_in.cat = num;
+		send_msg.arg = file;
+		send_msg.arg_size = num * sizeof(unsigned int);
+		send_msg.result = ret;
+		send_message(msg->sender, &send_msg);
+		free(file);
+		return ret;
+	}
+send:
+	send_msg.result = ret;
+	send_message(msg->sender, &send_msg);
+	return ret;
+}
+
+static int player_get_file_list(message_t *msg)
+{
+	int ret = 0, i;
+	player_file_item_t *file;
+	message_t send_msg;
+	int num = 0;
+    /********message body********/
+	msg_init(&send_msg);
+	memcpy(&(send_msg.arg_pass), &(msg->arg_pass),sizeof(message_arg_t));
+	send_msg.message = msg->message | 0x1000;
+	send_msg.sender = send_msg.receiver = SERVER_PLAYER;
+	/****************************/
+	if( misc_get_bit( info.thread_exit, PLAYER_INIT_CONDITION_FILE_LIST)==0 ) {
 		ret = -1;
+		goto send;
 	}
 	else {
 		for (i = 0; i < flist.num; i++) {
-			file[i].start = flist.start[i];
-			file[i].stop = flist.stop[i];
+			if( flist.start[i] < msg->arg_in.cat ) continue;
+			if( flist.stop[i] > msg->arg_in.dog ) continue;
+			num++;
+		}
+		if( num<=0 ) {
+			num = 0;
+			ret = 0;
+		}
+		else {
+			file = calloc(num, sizeof(player_file_item_t));
+			if(file == NULL) {
+				log_qcy(DEBUG_SERIOUS, "Fail to calloc file list item = %d", num);
+				ret = -1;
+				goto send;
+			}
+			num=0;
+			for (i = 0; i < flist.num; i++) {
+				if( flist.start[i] < msg->arg_in.cat ) continue;
+				if( flist.stop[i] > msg->arg_in.dog ) continue;
+				file[num].start = flist.start[i];
+				file[num].stop = flist.stop[i];
+				num++;
+			}
 		}
 		send_msg.arg_in.cat = RECORDER_TYPE_NORMAL;
-		send_msg.arg_in.dog = flist.num;
+		send_msg.arg_in.dog = num;
 		send_msg.arg_in.duck = 1;
 		send_msg.arg = file;
-		send_msg.arg_size = flist.num * sizeof(player_file_item_t);
+		send_msg.arg_size = num * sizeof(player_file_item_t);
+		send_msg.result = ret;
+		send_message(msg->sender, &send_msg);
+		free(file);
+		return ret;
 	}
+send:
 	send_msg.result = ret;
 	send_message(msg->sender, &send_msg);
-	if( file )
-		free(file);
 	return ret;
 }
 
@@ -172,30 +273,37 @@ int player_read_file_list(char *path)
 	}
 	int index=0;
 	while(index < n) {
+        if(strcmp(namelist[index]->d_name,".") == 0 ||
+           strcmp(namelist[index]->d_name,"..") == 0 )
+        	goto exit;
         if(namelist[index]->d_type == 10) goto exit;
-        else if(namelist[index]->d_type == 4) goto exit;
+        if(namelist[index]->d_type == 4) goto exit;
 		if( strstr(namelist[index]->d_name,".mp4") == NULL ) {
 			//remove file here.
-			remove( namelist[index]->d_name );
+			memset(name, 0, sizeof(name));
+			sprintf(name, "%s%s", path, namelist[index]->d_name);
+			remove( name );
 			goto exit;
 		}
 //		else if(strcmp(namelist[index]->d_name,".")==0 || strcmp(namelist[index]->d_name,"..")==0) goto exit;
-        else if(namelist[index]->d_type == 8) {
-        	p = strstr( namelist[index]->d_name, "202");	//first
-        	if( p == NULL) goto exit;
-        	memset(name, 0, sizeof(name));
-        	memcpy(name, p, 14);
-        	long long int st,ed;
-        	st = time_date_to_stamp( name );
-        	p+=15;
-        	memset(name, 0, sizeof(name));
-        	memcpy(name, p, 14);
-        	ed = time_date_to_stamp( name );
-        	if( st >= ed ) goto exit;
-        	flist.start[flist.num] = st;
-        	flist.stop[flist.num] = ed;
-        	flist.num ++;
-        }
+//        else if(namelist[index]->d_type == 8) {
+		p = strstr( namelist[index]->d_name, "202");	//first
+		if( p == NULL) goto exit;
+		memset(name, 0, sizeof(name));
+		memcpy(name, p, 14);
+		long long int st,ed;
+		st = time_date_to_stamp( name );
+//		st-= _config_.timezone * 3600;
+		p+=15;
+		memset(name, 0, sizeof(name));
+		memcpy(name, p, 14);
+		ed = time_date_to_stamp( name );
+//		ed-= _config_.timezone * 3600;
+		if( st >= ed ) goto exit;
+		flist.start[flist.num] = st;
+		flist.stop[flist.num] = ed;
+		flist.num ++;
+//        }
 exit:
 		free(namelist[index]);
 	    index++;
@@ -818,14 +926,17 @@ static int server_message_proc(void)
 			if( info.status >= STATUS_SETUP ) {
 	        	memset(name, 0, sizeof(name));
 	        	memcpy(name, (char*)(msg.arg), 14);
-	        	flist.start[flist.num] = time_date_to_stamp( name );
+	        	flist.start[flist.num] = time_date_to_stamp( name );// - _config_.timezone * 3600;
 	        	memset(name, 0, sizeof(name));
 	        	memcpy(name, &( ((char*)msg.arg)[14] ), 14);
-	        	flist.stop[flist.num] = time_date_to_stamp( name );
+	        	flist.stop[flist.num] = time_date_to_stamp( name );// - _config_.timezone * 3600;
 			}
 			break;
 		case MSG_PLAYER_GET_FILE_LIST:
 			ret = player_get_file_list(&msg);
+			break;
+		case MSG_PLAYER_GET_FILE_DATE:
+			ret = player_get_file_date(&msg);
 			break;
 		default:
 			log_qcy(DEBUG_SERIOUS, "not processed message = %x", msg.message);
