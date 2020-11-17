@@ -122,6 +122,31 @@ static int send_message(int receiver, message_t *msg)
 	return st;
 }
 
+static int player_set_property(message_t *msg)
+{
+	int ret=0, mode = -1;
+	message_t send_msg;
+    /********message body********/
+	msg_init(&send_msg);
+	memcpy(&(send_msg.arg_pass), &(msg->arg_pass),sizeof(message_arg_t));
+	send_msg.message = msg->message | 0x1000;
+	send_msg.sender = send_msg.receiver = SERVER_PLAYER;
+	send_msg.arg_in.cat = msg->arg_in.cat;
+	/****************************/
+	if( msg->arg_in.cat == PLAYER_PROPERTY_SPEED ) {
+		if( info.status != STATUS_RUN ) ret = 0;
+		else {
+			int temp = *((int*)(msg->arg));
+			job.init.speed = temp;
+		}
+	}
+	/***************************/
+	send_msg.result = ret;
+	ret = send_message(msg->receiver, &send_msg);
+	/***************************/
+	return ret;
+}
+
 static int player_get_file_date(message_t *msg)
 {
 	int ret = 0, i;
@@ -326,7 +351,7 @@ static int player_node_remove_last(player_list_node_t *head)
     }
     free(current->next);
     current->next = NULL;
-    return 0;
+    return ret;
 }
 
 static int player_node_clear(void)
@@ -417,7 +442,6 @@ static int player_search_file_list(long long start, long long end)
 
 static int player_init( message_t* msg )
 {
-	message_t send_msg;
 	int ret = 0;
 	if( config.profile.enable == 0 ) goto error;
 	player_interrupt();
@@ -431,11 +455,11 @@ static int player_init( message_t* msg )
 	if( job.init.stop <= job.init.start ) goto error;
 	if( job.init.start == 0 ) goto error;
 	if( player_search_file_list(job.init.start, job.init.stop) != 0) goto error;
-	log_qcy(DEBUG_SERIOUS, "------------add new player setting----------------");
-	log_qcy(DEBUG_SERIOUS, "now=%ld", time_get_now_stamp());
-	log_qcy(DEBUG_SERIOUS, "start=%ld", job.init.start);
-	log_qcy(DEBUG_SERIOUS, "end=%ld", job.init.stop);
-	log_qcy(DEBUG_SERIOUS, "--------------------------------------------------");
+	log_qcy(DEBUG_INFO, "------------add new player setting----------------");
+	log_qcy(DEBUG_INFO, "now=%ld", time_get_now_stamp());
+	log_qcy(DEBUG_INFO, "start=%ld", job.init.start);
+	log_qcy(DEBUG_INFO, "end=%ld", job.init.stop);
+	log_qcy(DEBUG_INFO, "--------------------------------------------------");
 	ret = 0;
 	return ret;
 error:
@@ -547,7 +571,7 @@ static int player_get_video_frame(void)
 			job.run.video_sync = start_time;
 		}
 	}
-	job.run.video_index++;
+	job.run.video_index += job.init.speed;
 	free(data);
 	usleep(10000);
     return 0;
@@ -608,7 +632,7 @@ static int player_get_audio_frame( void )
 		/****************************/
 		job.run.audio_sync = start_time;
 	}
-	job.run.audio_index++;
+	job.run.audio_index+= job.init.speed;
 	free(data);
 	usleep(10000);
     return 0;
@@ -696,7 +720,7 @@ static int player_open_mp4(void)
 			job.run.audio_frame_num = MP4GetTrackNumberOfSamples( job.run.mp4_file, id);
 			job.run.audio_timescale = MP4GetTrackTimeScale( job.run.mp4_file, id);
 //			job.run.audio_codec = MP4GetTrackAudioMpeg4Type( job.run.mp4_file, id);
-			log_qcy(DEBUG_SERIOUS, "audio codec = %s", MP4GetTrackMediaDataName(job.run.mp4_file, id));
+			log_qcy(DEBUG_INFO, "audio codec = %s", MP4GetTrackMediaDataName(job.run.mp4_file, id));
 			job.run.audio_index = 1;
         }
     }
@@ -728,7 +752,7 @@ static int player_close_mp4(void)
 	int ret = 0;
 	if( job.run.mp4_file ) {
 		MP4Close( job.run.mp4_file, 0);
-		log_qcy(DEBUG_SERIOUS, "$%$%$%closed file %s$%$%$%", job.run.file_path);
+		log_qcy(DEBUG_INFO, "$%$%$%closed file %s$%$%$%", job.run.file_path);
 		memset( &job.run, 0, sizeof(player_run_t));
 	}
 	return ret;
@@ -923,13 +947,15 @@ static int server_message_proc(void)
 			}
 			break;
 		case MSG_RECORDER_ADD_FILE:
-			if( info.status >= STATUS_SETUP ) {
+			if( (info.status >= STATUS_WAIT) &&
+					misc_get_bit( info.thread_exit, PLAYER_INIT_CONDITION_FILE_LIST)) {
 	        	memset(name, 0, sizeof(name));
 	        	memcpy(name, (char*)(msg.arg), 14);
 	        	flist.start[flist.num] = time_date_to_stamp( name );// - _config_.timezone * 3600;
 	        	memset(name, 0, sizeof(name));
 	        	memcpy(name, &( ((char*)msg.arg)[14] ), 14);
 	        	flist.stop[flist.num] = time_date_to_stamp( name );// - _config_.timezone * 3600;
+	        	flist.num++;
 			}
 			break;
 		case MSG_PLAYER_GET_FILE_LIST:
@@ -937,6 +963,9 @@ static int server_message_proc(void)
 			break;
 		case MSG_PLAYER_GET_FILE_DATE:
 			ret = player_get_file_date(&msg);
+			break;
+		case MSG_PLAYER_PROPERTY_SET:
+			ret = player_set_property(&msg);
 			break;
 		default:
 			log_qcy(DEBUG_SERIOUS, "not processed message = %x", msg.message);
@@ -1103,7 +1132,7 @@ static void *server_func(void)
 		/***************************/
 	}
 	server_release();
-	log_qcy(DEBUG_SERIOUS, "-----------thread exit: server_player-----------");
+	log_qcy(DEBUG_INFO, "-----------thread exit: server_player-----------");
 	pthread_exit(0);
 }
 
@@ -1123,7 +1152,7 @@ int server_player_start(void)
 		 return ret;
 	 }
 	else {
-		log_qcy(DEBUG_SERIOUS, "player server create successful!");
+		log_qcy(DEBUG_INFO, "player server create successful!");
 		return 0;
 	}
 }
@@ -1141,10 +1170,10 @@ int server_player_message(message_t *msg)
 		return ret;
 	}
 	ret = msg_buffer_push(&message, msg);
-	log_qcy(DEBUG_SERIOUS, "push into the player message queue: sender=%d, message=%x, ret=%d, head=%d, tail=%d", msg->sender, msg->message, ret,
+	log_qcy(DEBUG_VERBOSE, "push into the player message queue: sender=%d, message=%x, ret=%d, head=%d, tail=%d", msg->sender, msg->message, ret,
 			message.head, message.tail);
 	if( ret!=0 )
-		log_qcy(DEBUG_SERIOUS, "message push in player error =%d", ret);
+		log_qcy(DEBUG_WARNING, "message push in player error =%d", ret);
 	ret1 = pthread_rwlock_unlock(&message.lock);
 	if (ret1)
 		log_qcy(DEBUG_SERIOUS, "add message unlock fail, ret = %d\n", ret1);
