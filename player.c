@@ -1051,7 +1051,7 @@ static void task_default(void)
 			    /********message body********/
 				msg_init(&msg);
 				msg.message = MSG_MIIO_PROPERTY_GET;
-				msg.sender = msg.receiver = SERVER_RECORDER;
+				msg.sender = msg.receiver = SERVER_PLAYER;
 				msg.arg_in.cat = MIIO_PROPERTY_TIME_SYNC;
 				server_miio_message(&msg);
 				/****************************/
