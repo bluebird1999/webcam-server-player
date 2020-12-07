@@ -44,6 +44,5 @@ typedef struct player_config_t {
  */
 int config_player_read(player_config_t*);
 int config_player_set(int module, void *arg);
-int config_player_get_config_status(int module);
 
 #endif /* SERVER_PLAYER_CONFIG_H_ */

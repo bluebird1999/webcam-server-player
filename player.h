@@ -21,19 +21,37 @@
 //#define PLAYBACK_RESP_FILEREADERROR_TEMPLATE "{\"id\":%d, \"status\":\"readerror\", \"starttime\":%d}"
 //#define PLAYBACK_RESP_ERRREQUEST_TEMPLATE "{\"id\":%d, \"status\":\"errorrequest\", \"starttime\":%d}"
 
-#define		MAX_FILE_NUM							1440*7		//one week for 60s file recording
-#define		PLAYER_INIT_CONDITION_NUM				4
+#define		MAX_FILE_NUM							1440*2		//one week for 60s file recording
+#define		PLAYER_INIT_CONDITION_NUM				5
 #define		PLAYER_INIT_CONDITION_CONFIG			0
 #define		PLAYER_INIT_CONDITION_MIIO_TIME			1
 #define		PLAYER_INIT_CONDITION_FILE_LIST			2
 #define		PLAYER_INIT_CONDITION_RECORDER_CONFIG	3
+#define		PLAYER_INIT_CONDITION_DEVICE_SD			4
 
 #define		DEFAULT_SYNC_DURATION					67			//67ms
+
+#define		PLAYER_EXIT_CONDITION					( (1 << SERVER_MISS) )
+
+#define		PLAYER_MAX_FAILED_SEND					15
+
+typedef enum {
+	PLAYER_THREAD_NONE = 0,
+	PLAYER_THREAD_INITED,
+	PLAYER_THREAD_IDLE,
+	PLAYER_THREAD_RUN,
+	PLAYER_THREAD_STOP,
+	PLAYER_THREAD_PAUSE,
+	PLAYER_THREAD_FINISH,
+	PLAYER_THREAD_ERROR,
+};
+
 /*
  * structure
  */
 typedef struct player_list_node_t {
-    int             				data;
+    unsigned int					start;
+    unsigned int					stop;
     struct player_list_node_t*    	next;
 } player_list_node_t;
 
@@ -45,20 +63,8 @@ typedef struct player_file_list_t {
 	unsigned int	end;
 } player_file_list_t;
 
-typedef struct player_init_t {
-	char				switch_to_live;
-	char				auto_exit;
-	char				offset;
-	char				speed;
-	char				channel_merge;
-	unsigned long long 	start;
-	unsigned long long 	stop;
-	pthread_t 			pid;
-	pthread_rwlock_t 	lock;
-	player_list_node_t	*current;
-} player_init_t;
-
 typedef struct player_run_t {
+	player_list_node_t	*current;
 	char   				file_path[MAX_SYSTEM_STRING_SIZE*2];
 	MP4FileHandle 		mp4_file;
 	MP4TrackId 			video_track;
@@ -86,12 +92,21 @@ typedef struct player_run_t {
     int					fps;
     int					width;
     int					height;
+	av_qos_t 			qos;
 } player_run_t;
 
 typedef struct player_job_t {
+	//shared
+	char				status;
+	char				run;
+	char				speed;
+	char				restart;
+	char				exit;
+	char				audio;
+	//non-shared
+	char				session;
+	char				sid;
 	player_init_t		init;
-	player_run_t		run;
-	player_list_node_t	*fhead;
 } player_job_t;
 /*
  * function

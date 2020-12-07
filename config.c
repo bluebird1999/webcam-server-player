@@ -22,7 +22,6 @@
  * static
  */
 //variable
-static pthread_rwlock_t			lock;
 static int						dirty;
 static player_config_t		player_config;
 static config_map_t player_config_profile_map[] = {
@@ -51,11 +50,6 @@ static int player_config_save(void)
 	int ret = 0;
 	message_t msg;
 	char fname[MAX_SYSTEM_STRING_SIZE*2];
-	ret = pthread_rwlock_wrlock(&lock);
-	if(ret)	{
-		log_qcy(DEBUG_SERIOUS, "add lock fail, ret = %d\n", ret);
-		return ret;
-	}
 	memset(fname,0,sizeof(fname));
 	sprintf(fname,"%s%s",_config_.qcy_path, CONFIG_PLAYER_PROFILE_PATH);
 	if( misc_get_bit(dirty, CONFIG_PLAYER_PROFILE) ) {
@@ -69,12 +63,8 @@ static int player_config_save(void)
 		msg.message = MSG_MANAGER_TIMER_REMOVE;
 		msg.arg_in.handler = player_config_save;
 		/****************************/
-		manager_message(&msg);
+		manager_common_send_message(SERVER_MANAGER, &msg);
 	}
-	ret = pthread_rwlock_unlock(&lock);
-	if (ret)
-		log_qcy(DEBUG_SERIOUS, "add unlock fail, ret = %d\n", ret);
-
 	return ret;
 }
 
@@ -82,12 +72,6 @@ int config_player_read(player_config_t *rconfig)
 {
 	int ret,ret1=0;
 	char fname[MAX_SYSTEM_STRING_SIZE*2];
-	pthread_rwlock_init(&lock, NULL);
-	ret = pthread_rwlock_wrlock(&lock);
-	if(ret)	{
-		log_qcy(DEBUG_SERIOUS, "add lock fail, ret = %d\n", ret);
-		return ret;
-	}
 	memset(fname,0,sizeof(fname));
 	sprintf(fname,"%s%s",_config_.qcy_path, CONFIG_PLAYER_PROFILE_PATH);
 	ret = read_config_file(&player_config_profile_map, fname);
@@ -96,10 +80,6 @@ int config_player_read(player_config_t *rconfig)
 	else
 		misc_set_bit(&player_config.status, CONFIG_PLAYER_PROFILE,0);
 	ret1 |= ret;
-	ret = pthread_rwlock_unlock(&lock);
-	if (ret)
-		log_qcy(DEBUG_SERIOUS, "add unlock fail, ret = %d\n", ret);
-	ret1 |= ret;
 	memcpy(rconfig,&player_config,sizeof(player_config_t));
 	return ret1;
 }
@@ -107,11 +87,6 @@ int config_player_read(player_config_t *rconfig)
 int config_player_set(int module, void *arg)
 {
 	int ret = 0;
-	ret = pthread_rwlock_wrlock(&lock);
-	if(ret)	{
-		log_qcy(DEBUG_SERIOUS, "add lock fail, ret = %d\n", ret);
-		return ret;
-	}
 	if(dirty==0) {
 		message_t msg;
 	    /********message body********/
@@ -123,32 +98,11 @@ int config_player_set(int module, void *arg)
 		msg.arg_in.duck = 0;
 		msg.arg_in.handler = &player_config_save;
 		/****************************/
-		manager_message(&msg);
+		manager_common_send_message(SERVER_MANAGER, &msg);
 	}
 	misc_set_bit(&dirty, module, 1);
 	if( module == CONFIG_PLAYER_PROFILE) {
 		memcpy( (player_profile_config_t*)(&player_config.profile), arg, sizeof(player_profile_config_t));
 	}
-	ret = pthread_rwlock_unlock(&lock);
-	if (ret)
-		log_qcy(DEBUG_SERIOUS, "add unlock fail, ret = %d\n", ret);
 	return ret;
-}
-
-int config_player_get_config_status(int module)
-{
-	int st,ret=0;
-	ret = pthread_rwlock_wrlock(&lock);
-	if(ret)	{
-		log_qcy(DEBUG_SERIOUS, "add lock fail, ret = %d\n", ret);
-		return ret;
-	}
-	if(module==-1)
-		st = player_config.status;
-	else
-		st = misc_get_bit(player_config.status, module);
-	ret = pthread_rwlock_unlock(&lock);
-	if (ret)
-		log_qcy(DEBUG_SERIOUS, "add unlock fail, ret = %d\n", ret);
-	return st;
 }
