@@ -762,6 +762,7 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 			msg_init(&msg);
 			msg.message = MSG_MISS_VIDEO_DATA;
 			msg.arg_in.wolf = init->session_id;
+			msg.arg_in.handler = init->session;
 			packet->info.frame_index = run->video_index;
 			packet->info.timestamp = start_time + run->start * 1000;
 			packet->info.flag |= FLAG_STREAM_TYPE_PLAYBACK << 11;
@@ -811,6 +812,7 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 			msg_init(&msg);
 			msg.message = MSG_MISS_VIDEO_DATA;
 			msg.arg_in.wolf = init->session_id;
+			msg.arg_in.handler = init->session;
 			packet->info.frame_index = run->video_index;
 			packet->info.timestamp = start_time + run->start * 1000;
 			packet->info.flag |= FLAG_STREAM_TYPE_PLAYBACK << 11;
@@ -902,6 +904,7 @@ static int player_get_audio_frame( player_init_t *init, player_run_t *run, av_pa
 		msg.message = MSG_MISS_AUDIO_DATA;
 		msg.sender = msg.receiver = SERVER_PLAYER;
 		msg.arg_in.wolf = init->session_id;
+		msg.arg_in.handler = init->session;
 		packet->info.frame_index = run->audio_index;
 		packet->info.timestamp = start_time + run->start * 1000;
 		packet->info.flag = FLAG_AUDIO_SAMPLE_8K << 3 | FLAG_AUDIO_DATABITS_16 << 7 | FLAG_AUDIO_CHANNEL_MONO << 9 |  FLAG_RESOLUTION_AUDIO_DEFAULT << 17;

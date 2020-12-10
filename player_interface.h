@@ -20,7 +20,7 @@
 /*
  * define
  */
-#define		SERVER_PLAYER_VERSION_STRING		"alpha-4.0"
+#define		SERVER_PLAYER_VERSION_STRING		"alpha-4.1"
 
 #define		MSG_PLAYER_BASE						(SERVER_PLAYER<<16)
 #define		MSG_PLAYER_SIGINT					(MSG_PLAYER_BASE | 0x0000)
@@ -66,7 +66,7 @@ typedef struct player_init_t {
 	char				audio;
 	unsigned long long 	start;
 	unsigned long long 	stop;
-	void*				session;
+	void				*session;
 	int					session_id;
 	int					tid;
 } player_init_t;
