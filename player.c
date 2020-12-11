@@ -213,14 +213,14 @@ send:
 
 static int player_get_file_list(message_t *msg)
 {
-	int ret = 0, i, chn;
+	int ret = 0, i;
 	miss_playlist_t list;
 	unsigned int  empty[2]={0,0};
 	unsigned char *data = NULL;
 	unsigned char *p = NULL;
 	unsigned int cmd, all = 0, num =0, len = 0;
 	struct tm  ts;
-	unsigned long long int start,end, temp;
+	unsigned long long int start,end, temp, chn;
 	message_t send_msg;
     /********message body********/
 	msg_init(&send_msg);
@@ -258,7 +258,7 @@ static int player_get_file_list(message_t *msg)
 				memcpy(data, &cmd, sizeof(cmd));
 				memcpy(data + sizeof(cmd), &num, sizeof(num));
 				p = data + sizeof(cmd) + sizeof(num);
-				for (i = 0; i < num; i++) {
+				for (i = 0; i < flist.num; i++) {
 					if( flist.start[i] < start ) continue;
 					if( flist.stop[i] > end ) continue;
 					ts = *localtime( &(flist.start[i]) );
@@ -284,7 +284,7 @@ static int player_get_file_list(message_t *msg)
 				}
 			}
 			else if( cmd == GET_RECORD_TIMESTAMP) {
-				len = sizeof(num) + num * ( sizeof(unsigned long long int) * 2 + sizeof(unsigned int) );
+				len = sizeof(num) + num * ( sizeof(unsigned long long int) * 3 );
 				all = sizeof(cmd) + sizeof(len) + len;
 				data = malloc( all );
 				if( !data ) {
@@ -297,7 +297,7 @@ static int player_get_file_list(message_t *msg)
 				memcpy(data + sizeof(cmd), &len, sizeof(len));
 				memcpy(data + sizeof(cmd) + sizeof(len), &num, sizeof(num));
 				p = data + sizeof(cmd) + sizeof(len) + sizeof(num);
-				for (i = 0; i < num; i++) {
+				for (i = 0; i < flist.num; i++) {
 					if( flist.start[i] < start ) continue;
 					if( flist.stop[i] > end ) continue;
 					memcpy(p, &chn, sizeof(chn));
@@ -526,7 +526,12 @@ int player_read_file_list(char *path)
 		memset(name, 0, sizeof(name));
 		memcpy(name, p, 14);
 		ed = time_date_to_stamp( name );
-		if( st >= ed ) goto exit;
+		if( st >= ed ) {
+			memset(name, 0, sizeof(name));
+			sprintf(name, "%s%s", path, namelist[index]->d_name);
+			remove(name );
+			goto exit;
+		}
 		flist.start[flist.num] = st;
 		flist.stop[flist.num] = ed;
 		flist.num ++;
@@ -764,7 +769,7 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 			msg.arg_in.wolf = init->session_id;
 			msg.arg_in.handler = init->session;
 			packet->info.frame_index = run->video_index;
-			packet->info.timestamp = start_time + run->start * 1000;
+			packet->info.timestamp = start_time + run->start * 1000 + 500;
 			packet->info.flag |= FLAG_STREAM_TYPE_PLAYBACK << 11;
 			packet->info.flag |= FLAG_FRAME_TYPE_IFRAME << 0;
 			packet->info.flag |= FLAG_RESOLUTION_VIDEO_720P << 17;
@@ -814,7 +819,7 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 			msg.arg_in.wolf = init->session_id;
 			msg.arg_in.handler = init->session;
 			packet->info.frame_index = run->video_index;
-			packet->info.timestamp = start_time + run->start * 1000;
+			packet->info.timestamp = start_time + run->start * 1000 + 500;
 			packet->info.flag |= FLAG_STREAM_TYPE_PLAYBACK << 11;
 		    if( iframe )// I frame
 		    	packet->info.flag |= FLAG_FRAME_TYPE_IFRAME << 0;
@@ -1126,6 +1131,7 @@ static int player_add_job( message_t* msg )
 	int ret = 0, same = 0;
 	pthread_t 		pid;
 	player_init_t	*init = NULL;
+	int file_ret = PLAYER_FILEFOUND;
     /********message body********/
 	msg_init(&send_msg);
 	memcpy(&(send_msg.arg_pass), &(msg->arg_pass),sizeof(message_arg_t));
@@ -1138,7 +1144,10 @@ static int player_add_job( message_t* msg )
 	if( config.profile.enable == 0 ) goto error;
 	init = ((player_init_t*)msg->arg);
 	if( init == NULL) goto error;
-	if( player_check_file_list(init->start, init->stop) ) goto error;
+	if( player_check_file_list(init->start, init->stop) ) {
+		file_ret = PLAYER_FILENOTFOUND;
+		goto error;
+	}
 	id = find_job_session( init->session_id );
 	if( id != -1) {
 		same = 1;
@@ -1193,6 +1202,7 @@ static int player_add_job( message_t* msg )
 error:
 	pthread_rwlock_unlock(&ilock);
 	send_msg.result = -1;
+	send_msg.arg_in.tiger = file_ret;
 	ret = manager_common_send_message(msg->receiver, &send_msg);
 	return -1;
 }

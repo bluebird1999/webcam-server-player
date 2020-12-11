@@ -20,7 +20,7 @@
 /*
  * define
  */
-#define		SERVER_PLAYER_VERSION_STRING		"alpha-4.1"
+#define		SERVER_PLAYER_VERSION_STRING		"alpha-4.2"
 
 #define		MSG_PLAYER_BASE						(SERVER_PLAYER<<16)
 #define		MSG_PLAYER_SIGINT					(MSG_PLAYER_BASE | 0x0000)
@@ -55,6 +55,12 @@
 /*
  * structure
  */
+typedef enum {
+   PLAYER_FILEFOUND = 0x10,
+   PLAYER_FILENOTFOUND,
+   PLAYER_FINISH,
+};
+
 
 typedef struct player_init_t {
 	char				switch_to_live;
