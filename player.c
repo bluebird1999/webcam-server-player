@@ -57,6 +57,7 @@ static	pthread_rwlock_t		pvlock[MAX_SESSION_NUMBER] = {PTHREAD_RWLOCK_INITIALIZE
 static	pthread_rwlock_t		palock[MAX_SESSION_NUMBER] = {PTHREAD_RWLOCK_INITIALIZER};
 static	pthread_mutex_t			mutex = PTHREAD_MUTEX_INITIALIZER;
 static	pthread_cond_t			cond = PTHREAD_COND_INITIALIZER;
+static	char					hotplug;
 
 //function
 //common
@@ -1339,7 +1340,7 @@ static int *player_func(void* arg)
 	message_t msg;
 	player_list_node_t	*fhead = NULL;
 	player_init_t	init;
-	int	status;
+	int	status, send_finish = 0;
 	int ret, st, play, restart, speed;
 	pthread_detach(pthread_self());
 	pthread_rwlock_wrlock(&ilock);
@@ -1421,19 +1422,9 @@ static int *player_func(void* arg)
     		case PLAYER_THREAD_PAUSE:
     			break;
     		case PLAYER_THREAD_FINISH:
-    		    /********message body********/
-    			msg_init(&msg);
-    			msg.message = MSG_PLAYER_FINISH;
-    			msg.sender = msg.receiver = SERVER_PLAYER;
-    			msg.arg_in.cat = init.switch_to_live;
-    			msg.arg_in.dog = init.switch_to_live_audio;
-    			msg.arg_pass.cat = MISS_ASYN_PLAYER_FINISH;
-    			msg.arg_pass.wolf = init.session_id;
-    			msg.arg_pass.handler = init.session;
-    			ret = manager_common_send_message(SERVER_MISS,   &msg);
-    			/****************************/
     			log_qcy(DEBUG_INFO, "finished the playback for thread = %d", tid);
     			info.status = PLAYER_THREAD_INITED;
+    			send_finish = 1;
     	    	pthread_rwlock_wrlock(&ilock);
     	    	jobs[tid].exit = 1;
    	    		pthread_rwlock_unlock(&ilock);
@@ -1441,11 +1432,25 @@ static int *player_func(void* arg)
     		case PLAYER_THREAD_ERROR:
     			log_qcy(DEBUG_SERIOUS, "error within thread = %d", tid);
     			info.status = PLAYER_THREAD_INITED;
+    			send_finish = 1;
     	    	pthread_rwlock_wrlock(&ilock);
     	    	jobs[tid].exit = 1;
    	    		pthread_rwlock_unlock(&ilock);
     			break;
     	}
+    }
+    if( send_finish ) {
+		/********message body********/
+		msg_init(&msg);
+		msg.message = MSG_PLAYER_FINISH;
+		msg.sender = msg.receiver = SERVER_PLAYER;
+		msg.arg_in.cat = init.switch_to_live;
+		msg.arg_in.dog = init.switch_to_live_audio;
+		msg.arg_pass.cat = MISS_ASYN_PLAYER_FINISH;
+		msg.arg_pass.wolf = init.session_id;
+		msg.arg_pass.handler = init.session;
+		ret = manager_common_send_message(SERVER_MISS,   &msg);
+		/****************************/
     }
     //release
     player_node_clear(&fhead);
@@ -1487,41 +1492,6 @@ static void server_release_2(void)
 static void server_release_3(void)
 {
 	memset(&info, 0, sizeof(server_info_t));
-}
-
-static int player_init_routine(void)
-{
-	int ret = 0;
-	message_t msg;
-	if( !misc_get_bit( info.init_status, PLAYER_INIT_CONDITION_RECORDER_CONFIG)) {
-	    /********message body********/
-		msg_init(&msg);
-		msg.message = MSG_RECORDER_PROPERTY_GET;
-		msg.sender = msg.receiver = SERVER_PLAYER;
-		msg.arg_in.cat = RECORDER_PROPERTY_NORMAL_DIRECTORY;
-		ret = manager_common_send_message(SERVER_RECORDER,    &msg);
-		/***************************/
-	}
-	if( !misc_get_bit( info.init_status, PLAYER_INIT_CONDITION_DEVICE_SD)) {
-	    /********message body********/
-		msg_init(&msg);
-		msg.message = MSG_DEVICE_GET_PARA;
-		msg.sender = msg.receiver = SERVER_PLAYER;
-		msg.arg_in.cat = DEVICE_CTRL_SD_INFO;
-		ret = manager_common_send_message(SERVER_DEVICE, &msg);
-		/***************************/
-	}
-	if( misc_full_bit( info.init_status, PLAYER_INIT_CONDITION_NUM ) ) {
-		info.status = STATUS_WAIT;
-		/********message body********/
-		msg_init(&msg);
-		msg.message = MSG_MANAGER_TIMER_REMOVE;
-		msg.sender = msg.receiver = SERVER_PLAYER;
-		msg.arg_in.handler = player_init_routine;
-		manager_common_send_message(SERVER_MANAGER, &msg);
-		/****************************/
-	}
-	return 0;
 }
 
 /*
@@ -1602,9 +1572,6 @@ static int server_message_proc(void)
 					strcpy(config.profile.path, msg.arg);
 					strcpy(config.profile.prefix, msg.extra);
 					misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_RECORDER_CONFIG, 1);
-					if( !player_read_file_list( config.profile.path) ) {
-						misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_FILE_LIST, 1);
-					}
 				}
 			}
 			break;
@@ -1653,11 +1620,13 @@ static int server_message_proc(void)
 			break;
 		case MSG_DEVICE_SD_INSERT:
 			misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_DEVICE_SD, 1);
+			hotplug = 0;
 			break;
 		case MSG_DEVICE_GET_PARA_ACK:
 			if( !msg.result ) {
 				if( ((device_iot_config_t*)msg.arg)->sd_iot_info.plug ) {
 					misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_DEVICE_SD, 1);
+					hotplug = 0;
 				}
 			}
 			break;
@@ -1682,21 +1651,54 @@ static int server_none(void)
 		ret = config_player_read(&config);
 		if( !ret && misc_full_bit(config.status, CONFIG_PLAYER_MODULE_NUM) ) {
 			misc_set_bit(&info.init_status, PLAYER_INIT_CONDITION_CONFIG, 1);
-		    /********message body********/
-			msg_init(&msg);
-			msg.message = MSG_MANAGER_TIMER_ADD;
-			msg.sender = SERVER_PLAYER;
-			msg.arg_in.cat = 100;
-			msg.arg_in.dog = 0;
-			msg.arg_in.duck = 0;
-			msg.arg_in.handler = &player_init_routine;
-			manager_common_send_message(SERVER_MANAGER, &msg);
-			/****************************/
 		}
 		else {
 			info.status = STATUS_ERROR;
 			return -1;
 		}
+	}
+	if( !misc_get_bit( info.init_status, PLAYER_INIT_CONDITION_RECORDER_CONFIG)) {
+	    /********message body********/
+		msg_init(&msg);
+		msg.message = MSG_RECORDER_PROPERTY_GET;
+		msg.sender = msg.receiver = SERVER_PLAYER;
+		msg.arg_in.cat = RECORDER_PROPERTY_NORMAL_DIRECTORY;
+		ret = manager_common_send_message(SERVER_RECORDER,    &msg);
+		/***************************/
+		usleep(MESSAGE_RESENT_SLEEP);
+	}
+	if( !misc_get_bit( info.init_status, PLAYER_INIT_CONDITION_DEVICE_SD)) {
+		if( info.tick < MESSAGE_RESENT ) {
+			/********message body********/
+			msg_init(&msg);
+			msg.message = MSG_DEVICE_GET_PARA;
+			msg.sender = msg.receiver = SERVER_PLAYER;
+			msg.arg_in.cat = DEVICE_CTRL_SD_INFO;
+			ret = manager_common_send_message(SERVER_DEVICE, &msg);
+			/***************************/
+			info.tick++;
+		}
+		usleep(MESSAGE_RESENT_SLEEP);
+	}
+	if( !misc_get_bit( info.init_status, PLAYER_INIT_CONDITION_MIIO_TIME)) {
+		/********message body********/
+		msg_init(&msg);
+		msg.message = MSG_MIIO_PROPERTY_GET;
+		msg.sender = msg.receiver = SERVER_PLAYER;
+		msg.arg_in.cat = MIIO_PROPERTY_TIME_SYNC;
+		ret = manager_common_send_message(SERVER_MIIO, &msg);
+		/***************************/
+		usleep(MESSAGE_RESENT_SLEEP);
+	}
+	if( misc_get_bit( info.init_status, PLAYER_INIT_CONDITION_DEVICE_SD) &&
+		misc_get_bit( info.init_status, PLAYER_INIT_CONDITION_RECORDER_CONFIG)	) {
+		if( !player_read_file_list( config.profile.path) ) {
+			misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_FILE_LIST, 1);
+		}
+	}
+	if( misc_full_bit( info.init_status, PLAYER_INIT_CONDITION_NUM ) ) {
+		info.status = STATUS_WAIT;
+		info.tick = 0;
 	}
 	return ret;
 }
@@ -1852,4 +1854,20 @@ int server_player_message(message_t *msg)
 	}
 	pthread_mutex_unlock(&mutex);
 	return ret;
+}
+
+void server_player_interrupt_routine(int param)
+{
+	if( param == 1) {
+		info.msg_lock = 0;
+		hotplug = 1;
+		info.tick = 0;
+		misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_DEVICE_SD, 0);
+		player_quit_all(-1);
+		info.status = STATUS_NONE;
+		pthread_mutex_lock(&mutex);
+		pthread_cond_signal(&cond);
+		pthread_mutex_unlock(&mutex);
+		log_qcy(DEBUG_SERIOUS, "PLAYER: hotplug happened, player roll back to none state--------------");
+	}
 }
