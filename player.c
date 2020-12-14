@@ -52,9 +52,9 @@ static	player_job_t			jobs[MAX_SESSION_NUMBER];
 static	player_file_list_t		flist;
 static 	av_buffer_t				pvbuffer[MAX_SESSION_NUMBER];
 static 	av_buffer_t				pabuffer[MAX_SESSION_NUMBER];
-static  pthread_rwlock_t		ilock = PTHREAD_MUTEX_INITIALIZER;
-static	pthread_rwlock_t		pvlock[MAX_SESSION_NUMBER] = {PTHREAD_RWLOCK_INITIALIZER};
-static	pthread_rwlock_t		palock[MAX_SESSION_NUMBER] = {PTHREAD_RWLOCK_INITIALIZER};
+static  pthread_rwlock_t		ilock = PTHREAD_RWLOCK_INITIALIZER;
+static	pthread_rwlock_t		pvlock[MAX_SESSION_NUMBER] = {PTHREAD_RWLOCK_INITIALIZER,PTHREAD_RWLOCK_INITIALIZER,PTHREAD_RWLOCK_INITIALIZER};
+static	pthread_rwlock_t		palock[MAX_SESSION_NUMBER] = {PTHREAD_RWLOCK_INITIALIZER,PTHREAD_RWLOCK_INITIALIZER,PTHREAD_RWLOCK_INITIALIZER};
 static	pthread_mutex_t			mutex = PTHREAD_MUTEX_INITIALIZER;
 static	pthread_cond_t			cond = PTHREAD_COND_INITIALIZER;
 static	char					hotplug;
@@ -405,7 +405,7 @@ static void *player_picture_func(void *arg)
 		size = 0;
 		for (i = 0; (i < flist.num) && (!info.exit); i++) {
 			if( flist.start[i] < msg->arg_in.cat ) continue;
-			if( flist.stop[i] > msg->arg_in.dog ) continue;
+			if( flist.stop[i] > msg->arg_in.dog + 59) continue;
 			begin[size] = (unsigned int)flist.start[i];
 			end[size] = (unsigned int)flist.stop[i];
 			size++;
@@ -770,7 +770,7 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 			msg.arg_in.wolf = init->session_id;
 			msg.arg_in.handler = init->session;
 			packet->info.frame_index = run->video_index;
-			packet->info.timestamp = start_time + run->start * 1000 + 500;
+			packet->info.timestamp = start_time + run->start * 1000 + 1000;
 			packet->info.flag |= FLAG_STREAM_TYPE_PLAYBACK << 11;
 			packet->info.flag |= FLAG_FRAME_TYPE_IFRAME << 0;
 			packet->info.flag |= FLAG_RESOLUTION_VIDEO_720P << 17;
@@ -820,7 +820,7 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 			msg.arg_in.wolf = init->session_id;
 			msg.arg_in.handler = init->session;
 			packet->info.frame_index = run->video_index;
-			packet->info.timestamp = start_time + run->start * 1000 + 500;
+			packet->info.timestamp = start_time + run->start * 1000 + 1000;
 			packet->info.flag |= FLAG_STREAM_TYPE_PLAYBACK << 11;
 		    if( iframe )// I frame
 		    	packet->info.flag |= FLAG_FRAME_TYPE_IFRAME << 0;
@@ -1138,6 +1138,7 @@ static int player_add_job( message_t* msg )
 	memcpy(&(send_msg.arg_pass), &(msg->arg_pass),sizeof(message_arg_t));
 	memcpy(&(send_msg.arg_in), &(msg->arg_in),sizeof(message_arg_t));
 	send_msg.message = msg->message | 0x1000;
+	send_msg.arg_in.tiger = file_ret;
 	send_msg.sender = send_msg.receiver = SERVER_PLAYER;
 	if( info.status != STATUS_RUN ) goto error;
 	/***************************/
@@ -1173,7 +1174,7 @@ static int player_add_job( message_t* msg )
 		jobs[id].speed = init->speed;
 		jobs[id].restart = 1;
 		log_qcy(DEBUG_INFO, "player thread updated successful!");
-		msg->arg_in.cat = 1;
+		send_msg.arg_in.cat = 1;
 	}
 	else {
 		//start the thread
@@ -1194,7 +1195,7 @@ static int player_add_job( message_t* msg )
 		jobs[id].speed = init->speed;
 		jobs[id].restart = 0;
 		log_qcy(DEBUG_INFO, "player thread create successful!");
-		msg->arg_in.cat = 0;
+		send_msg.arg_in.cat = 0;
 	}
 	pthread_rwlock_unlock(&ilock);
 	send_msg.result = 0;
@@ -1511,13 +1512,16 @@ static int server_message_proc(void)
 	int ret = 0;
 	message_t msg, send_msg;
 	char	name[MAX_SYSTEM_STRING_SIZE];
-	if( info.msg_lock ) return 0;
 	//condition
 	pthread_mutex_lock(&mutex);
 	if( message.head == message.tail ) {
 		if( (info.status == info.old_status ) ) {
 			pthread_cond_wait(&cond,&mutex);
 		}
+	}
+	if( info.msg_lock ) {
+		pthread_mutex_unlock(&mutex);
+		return 0;
 	}
 	msg_init(&msg);
 	ret = msg_buffer_pop(&message, &msg);
