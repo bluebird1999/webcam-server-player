@@ -1124,9 +1124,9 @@ static int player_main(player_init_t *init, player_run_t *run, av_buffer_t *vbuf
 	else if( init->speed == 1 )
 		usleep(30000);
 	else if( init->speed == 2 )
-		usleep(15000);
+		usleep(10000);
 	else if( init->speed == 4 )
-		usleep(7500);
+		usleep(3000);
 	else if( init->speed == 16)
 		usleep(2000);
 	return 0;
