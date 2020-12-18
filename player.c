@@ -495,6 +495,8 @@ int player_read_file_list(char *path)
 	char name[MAX_SYSTEM_STRING_SIZE*8];
 	char *p = NULL;
 	pthread_rwlock_rdlock(&ilock);
+	if(access(path, F_OK))
+		mkdir("/mnt/media/normal",0777);
 	n = scandir(path, &namelist, 0, alphasort);
 	if(n < 0) {
 	    log_qcy(DEBUG_SERIOUS, "Open dir error %s", path);
@@ -539,8 +541,10 @@ int player_read_file_list(char *path)
 exit:
 		free(namelist[index]);
 	    index++;
-		if( flist.num >= MAX_FILE_NUM)
+		if( flist.num >= MAX_FILE_NUM) {
+			flist.num = MAX_FILE_NUM;
 			break;
+		}
 	}
 	free(namelist);
 	pthread_rwlock_unlock(&ilock);
@@ -808,6 +812,11 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 				run->video_index++;
 				return 0;
 			}
+			if( !iframe && speed == 16 ) {
+				free(data);
+				run->video_index++;
+				return 0;
+			}
 			data[0] = 0x00;
 			data[1] = 0x00;
 			data[2] = 0x00;
@@ -856,8 +865,12 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 		}
 		log_qcy(DEBUG_VERBOSE," data = %p,size=%d", data, size);
 	}
-	if( speed == 1 || speed == 2) {
-		run->video_index += jobs[init->tid].speed;
+	if( (speed == 1) || (speed == 2) ||
+			(speed == 4) || (speed == 0) ) {
+		run->video_index++;
+	}
+	else if( speed==16) {
+		run->video_index++;
 	}
     return 0;
 }
@@ -935,8 +948,12 @@ static int player_get_audio_frame( player_init_t *init, player_run_t *run, av_pa
 		/****************************/
 		run->audio_sync = start_time;
 	}
-	if( speed == 1 || speed == 2) {
-		run->audio_index += speed;
+	if( (speed == 1) || (speed == 2) ||
+			(speed == 4) || (speed == 0) ) {
+		run->audio_index++;
+	}
+	else if( speed==16) {
+		run->audio_index+=30;	//2xfps for audio
 	}
     return 0;
 }
@@ -993,7 +1010,7 @@ static int player_open_mp4(player_init_t *init, player_run_t *run, player_list_n
             run->fps = MP4GetTrackVideoFrameRate(run->mp4_file, id);
             run->width = MP4GetTrackVideoWidth(run->mp4_file, id);
             run->height = MP4GetTrackVideoHeight(run->mp4_file, id);
-            log_qcy(DEBUG_SERIOUS, "video codec = %s", MP4GetTrackMediaDataName(run->mp4_file, id));
+            log_qcy(DEBUG_INFO, "video codec = %s", MP4GetTrackMediaDataName(run->mp4_file, id));
             run->video_index = 1;
             //sps pps
 			char result = MP4GetTrackH264SeqPictHeaders(run->mp4_file, id, &sps_header, &sps_size,
@@ -1102,7 +1119,16 @@ static int player_main(player_init_t *init, player_run_t *run, av_buffer_t *vbuf
 	if( ret_video && ret_audio ) {
 		goto next_stream;
 	}
-	usleep(30000);
+	if( init->speed == 0 )
+		usleep(60000);
+	else if( init->speed == 1 )
+		usleep(30000);
+	else if( init->speed == 2 )
+		usleep(15000);
+	else if( init->speed == 4 )
+		usleep(7500);
+	else if( init->speed == 16)
+		usleep(2000);
 	return 0;
 next_stream:
 	player_close_mp4(run);
@@ -1173,6 +1199,7 @@ static int player_add_job( message_t* msg )
 		jobs[id].run = 1;
 		jobs[id].speed = init->speed;
 		jobs[id].restart = 1;
+		jobs[id].exit = 0;
 		log_qcy(DEBUG_INFO, "player thread updated successful!");
 		send_msg.arg_in.cat = 1;
 	}
@@ -1194,6 +1221,7 @@ static int player_add_job( message_t* msg )
 		jobs[id].run = 0;
 		jobs[id].speed = init->speed;
 		jobs[id].restart = 0;
+		jobs[id].exit = 0;
 		log_qcy(DEBUG_INFO, "player thread create successful!");
 		send_msg.arg_in.cat = 0;
 	}
@@ -1582,6 +1610,8 @@ static int server_message_proc(void)
 		case MSG_RECORDER_ADD_FILE:
 			if( misc_get_bit( info.init_status, PLAYER_INIT_CONDITION_FILE_LIST) ) {
 				pthread_rwlock_wrlock(&ilock);
+				if( flist.num >= MAX_FILE_NUM )
+					break;
 	        	memset(name, 0, sizeof(name));
 	        	memcpy(name, (char*)(msg.arg), 14);
 	        	flist.start[flist.num] = time_date_to_stamp( name );// - _config_.timezone * 3600;
@@ -1615,26 +1645,39 @@ static int server_message_proc(void)
 			memcpy(&send_msg.arg_in, &msg.arg_in, sizeof(message_arg_t));
 			manager_common_send_message(msg.receiver, &send_msg);
 			break;
-		case MSG_DEVICE_SD_CAP_ALARM:
-			break;
-		case MSG_DEVICE_SD_EJECTED:
-			player_quit_all(-1);
-			misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_DEVICE_SD, 0);
-			info.status = STATUS_NONE;
-			break;
-		case MSG_DEVICE_SD_INSERT:
-			misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_DEVICE_SD, 1);
-			hotplug = 0;
-			break;
-		case MSG_DEVICE_GET_PARA_ACK:
+		case MSG_DEVICE_GET_PARA_ACK: {
+			device_iot_config_t dev_iot;
 			if( !msg.result ) {
-				if( ((device_iot_config_t*)msg.arg)->sd_iot_info.plug ) {
+				memcpy(&dev_iot, msg.arg, sizeof(device_iot_config_t));
+				if( dev_iot.sd_iot_info.plug == SD_STATUS_PLUG ) {
 					misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_DEVICE_SD, 1);
 					hotplug = 0;
 				}
 			}
 			break;
+		}
 		case MSG_MANAGER_DUMMY:
+			break;
+		case MSG_DEVICE_ACTION:
+			if(msg.arg_in.cat == DEVICE_ACTION_SD_CAP_ALARM) {
+				break;
+			}
+			else if(msg.arg_in.cat == DEVICE_ACTION_SD_EJECTED) {
+				player_quit_all(-1);
+				misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_DEVICE_SD, 0);
+				info.status = STATUS_NONE;
+				info.tick = 10;
+				if(msg.arg_in.wolf) {
+					send_msg.sender = send_msg.receiver = SERVER_PLAYER;
+					send_msg.message = MSG_DEVICE_ACTION;
+					send_msg.arg_in.cat = DEVICE_ACTION_SD_EJECTED_ACK;
+					server_device_message(&send_msg);
+				}
+			}
+			else if(msg.arg_in.cat == DEVICE_ACTION_SD_INSERT) {
+				info.tick = 0;	//restart the device check
+				hotplug = 0;
+			}
 			break;
 		default:
 			log_qcy(DEBUG_SERIOUS, "not processed message = %x", msg.message);
@@ -1716,9 +1759,13 @@ static void task_exit(void)
 {
 	switch( info.status ){
 		case EXIT_INIT:
-			info.error = PLAYER_EXIT_CONDITION;
+			log_qcy(DEBUG_INFO,"PLAYER: switch to exit task!");
 			if( info.task.msg.sender == SERVER_MANAGER) {
+				info.error = PLAYER_EXIT_CONDITION;
 				info.error &= (info.task.msg.arg_in.cat);
+			}
+			else {
+				info.error = 0;
 			}
 			info.status = EXIT_SERVER;
 			break;
