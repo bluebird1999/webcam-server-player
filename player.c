@@ -961,7 +961,8 @@ static int player_get_audio_frame( player_init_t *init, player_run_t *run, av_pa
 static int player_open_mp4(player_init_t *init, player_run_t *run, player_list_node_t *fhead)
 {
     int i, num_tracks;
-    int diff, sample_time;
+    int diff;
+    unsigned long long int sample_time;
 	unsigned char	**sps_header = NULL;
 	unsigned char  	**pps_header = NULL;
 	unsigned int	*sps_size = NULL;
@@ -1047,11 +1048,12 @@ static int player_open_mp4(player_init_t *init, player_run_t *run, player_list_n
         }
     }
     //seek
-    diff = ( run->current->start - run->start ) * 1000;
+//    diff = ( run->current->start - run->start ) * 1000;
+    diff = ( run->current->start - (run->start + init->offset ) ) * 1000;
     for( i=1;i<=run->video_frame_num;i++) {
         sample_time = MP4GetSampleTime( run->mp4_file, run->video_track, i );
         sample_time = sample_time * 1000 / run->video_timescale;
-    	if ( ( diff + sample_time ) >= 0 ) {
+    	if ( (int)( diff + sample_time ) >= 0 ) {
     		if( i>1 ) run->video_index = i;
     		else run->video_index = 1;
     		break;
@@ -1060,7 +1062,7 @@ static int player_open_mp4(player_init_t *init, player_run_t *run, player_list_n
     for( i=1;i<=run->audio_frame_num;i++) {
         sample_time = MP4GetSampleTime( run->mp4_file, run->audio_track, i );
         sample_time = sample_time * 1000 / run->audio_timescale;
-    	if ( ( diff + sample_time ) >= 0 ) {
+    	if ( (int)( diff + sample_time ) >= 0 ) {
     		if( i>1 ) run->audio_index = i;
     		else run->audio_index = 1;
     		break;
@@ -1562,6 +1564,7 @@ static int server_message_proc(void)
 				ret, message.head, message.tail, info.task.func);
 		return -1;
 	}
+	msg_init(&send_msg);
 	log_qcy(DEBUG_VERBOSE, "-----pop out from the PLAYER message queue: sender=%d, message=%x, ret=%d, head=%d, tail=%d", msg.sender, msg.message,
 			ret, message.head, message.tail);
 	msg_init(&info.task.msg);
@@ -1671,6 +1674,7 @@ static int server_message_proc(void)
 					send_msg.sender = send_msg.receiver = SERVER_PLAYER;
 					send_msg.message = MSG_DEVICE_ACTION;
 					send_msg.arg_in.cat = DEVICE_ACTION_SD_EJECTED_ACK;
+					memcpy(&(send_msg.arg_pass), &(msg.arg_pass),sizeof(message_arg_t));
 					server_device_message(&send_msg);
 				}
 			}
@@ -1678,6 +1682,17 @@ static int server_message_proc(void)
 				info.tick = 0;	//restart the device check
 				hotplug = 0;
 			}
+			break;
+		case MSG_RECORDER_CLEAN_DISK_START:
+			player_quit_all(-1);
+			misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_DEVICE_SD, 0);
+			info.status = STATUS_NONE;
+			info.tick = 10;//no-request to device
+			break;
+		case MSG_RECORDER_CLEAN_DISK_STOP:
+			info.tick = 0;	//restart the device check
+			misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_DEVICE_SD, 1); //fake device response
+			hotplug = 0;
 			break;
 		default:
 			log_qcy(DEBUG_SERIOUS, "not processed message = %x", msg.message);
@@ -1739,8 +1754,10 @@ static int server_none(void)
 	}
 	if( misc_get_bit( info.init_status, PLAYER_INIT_CONDITION_DEVICE_SD) &&
 		misc_get_bit( info.init_status, PLAYER_INIT_CONDITION_RECORDER_CONFIG)	) {
-		if( !player_read_file_list( config.profile.path) ) {
-			misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_FILE_LIST, 1);
+		if(!misc_get_bit( info.init_status, PLAYER_INIT_CONDITION_FILE_LIST)) {
+			if( !player_read_file_list( config.profile.path) ) {
+				misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_FILE_LIST, 1);
+			}
 		}
 	}
 	if( misc_full_bit( info.init_status, PLAYER_INIT_CONDITION_NUM ) ) {
