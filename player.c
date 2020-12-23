@@ -31,13 +31,14 @@
 #include "../../tools/tools_interface.h"
 #include "../../server/player/player_interface.h"
 #include "../../server/miio/miio_interface.h"
-#include "../../server/video/video_interface.h"
 #include "../../server/audio/audio_interface.h"
 #include "../../server/recorder/recorder_interface.h"
 #include "../../server/miss/miss_interface.h"
 #include "../../server/device/device_interface.h"
 //server header
 #include "player.h"
+
+#include "../video2/video2_interface.h"
 #include "config.h"
 #include "player_interface.h"
 
@@ -788,7 +789,6 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 				log_qcy(DEBUG_WARNING, "Player video ring buffer send failed due to non-existing miss server or session");
 				player_quit_all(init->tid);
 				log_qcy(DEBUG_WARNING, "----shut down player video miss stream due to session lost!------");
-				av_packet_check(packet);
 			}
 			else if( ret == MISS_LOCAL_ERR_AV_NOT_RUN) {
 				av_packet_check(packet);
@@ -842,10 +842,10 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 			ret = -1;
 			ret = server_miss_video_message(&msg);
 			if( (ret == MISS_LOCAL_ERR_MISS_GONE) || (ret == MISS_LOCAL_ERR_SESSION_GONE) ) {
+				av_packet_check(packet);
 				log_qcy(DEBUG_WARNING, "Player video ring buffer send failed due to non-existing miss server or session");
 				player_quit_all(init->tid);
 				log_qcy(DEBUG_WARNING, "----shut down player video miss stream due to session lost!------");
-				av_packet_check(packet);
 			}
 			else if( ret == MISS_LOCAL_ERR_AV_NOT_RUN) {
 				av_packet_check(packet);
@@ -936,9 +936,9 @@ static int player_get_audio_frame( player_init_t *init, player_run_t *run, av_pa
 			ret = server_miss_audio_message(&msg);
 	    }
 		if( (ret == MISS_LOCAL_ERR_MISS_GONE) || (ret == MISS_LOCAL_ERR_SESSION_GONE) ) {
+			av_packet_check(packet);
 			log_qcy(DEBUG_WARNING, "Player audio ring buffer send failed due to non-existing miss server or session");
 			log_qcy(DEBUG_WARNING, "----shut down player audio miss stream due to session lost!------");
-			av_packet_check(packet);
 			jobs[init->tid].audio = 0;
 		}
 		else if( ret==0 ) {
