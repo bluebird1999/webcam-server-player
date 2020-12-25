@@ -495,6 +495,8 @@ int player_read_file_list(char *path)
 	int n;
 	char name[MAX_SYSTEM_STRING_SIZE*8];
 	char *p = NULL;
+
+	memset(&flist, 0, sizeof(player_file_list_t));
 	pthread_rwlock_rdlock(&ilock);
 	if(access(path, F_OK))
 		mkdir("/mnt/media/normal",0777);
@@ -684,7 +686,7 @@ static int player_search_file_list(long long start, long long end, player_list_n
 	num = 0;
 	for(i=start_index;i<=stop_index;i++) {
 		if( flist.stop[i] <= start) continue;
-		if( flist.start[i] >= end) continue;;
+		if( flist.start[i] >= end) continue;
 		num++;
 		player_node_insert(fhead, flist.start[i], flist.stop[i]);
 	}
@@ -925,7 +927,7 @@ static int player_get_audio_frame( player_init_t *init, player_run_t *run, av_pa
 		msg.arg_in.wolf = init->session_id;
 		msg.arg_in.handler = init->session;
 		packet->info.frame_index = run->audio_index;
-		packet->info.timestamp = start_time + run->start * 1000;
+		packet->info.timestamp = start_time + run->start * 1000 + 1000;
 		packet->info.flag = FLAG_AUDIO_SAMPLE_8K << 3 | FLAG_AUDIO_DATABITS_16 << 7 | FLAG_AUDIO_CHANNEL_MONO << 9 |  FLAG_RESOLUTION_AUDIO_DEFAULT << 17;
 		packet->info.size = size;
 		msg.arg = packet;
@@ -1196,7 +1198,7 @@ static int player_add_job( message_t* msg )
 		memcpy( &(jobs[id].init), init, sizeof(player_init_t));
 		jobs[id].init.tid = id;
 		misc_set_bit(&info.thread_start, id, 1);
-		jobs[id].status = RECORDER_THREAD_INITED;
+		jobs[id].status = PLAYER_THREAD_INITED;
 		jobs[id].audio = init->audio;
 		jobs[id].run = 1;
 		jobs[id].speed = init->speed;
@@ -1668,6 +1670,7 @@ static int server_message_proc(void)
 			else if(msg.arg_in.cat == DEVICE_ACTION_SD_EJECTED) {
 				player_quit_all(-1);
 				misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_DEVICE_SD, 0);
+				misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_FILE_LIST, 0);
 				info.status = STATUS_NONE;
 				info.tick = 10;
 				if(msg.arg_in.wolf) {

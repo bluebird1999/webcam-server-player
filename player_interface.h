@@ -20,7 +20,7 @@
 /*
  * define
  */
-#define		SERVER_PLAYER_VERSION_STRING		"alpha-5.0"
+#define		SERVER_PLAYER_VERSION_STRING		"alpha-5.1"
 
 #define		MSG_PLAYER_BASE						(SERVER_PLAYER<<16)
 #define		MSG_PLAYER_SIGINT					(MSG_PLAYER_BASE | 0x0000)
