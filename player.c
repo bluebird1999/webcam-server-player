@@ -25,6 +25,8 @@
 #include <mp4v2/mp4v2.h>
 #include <malloc.h>
 #include <miss.h>
+#include <malloc.h>
+
 //program header
 #include "../../manager/manager_interface.h"
 #include "../../server/realtek/realtek_interface.h"
@@ -221,7 +223,7 @@ static int player_get_file_list(message_t *msg)
 	unsigned char *data = NULL;
 	unsigned char *p = NULL;
 	unsigned int cmd, all = 0, num =0, len = 0;
-	struct tm  ts;
+	struct tm  ts={0};
 	unsigned long long int start,end, temp, chn;
 	message_t send_msg;
     /********message body********/
@@ -263,7 +265,8 @@ static int player_get_file_list(message_t *msg)
 				for (i = 0; i < flist.num; i++) {
 					if( flist.start[i] < start ) continue;
 					if( flist.stop[i] > end ) continue;
-					ts = *localtime( &(flist.start[i]) );
+					memset(&ts, 0, sizeof(ts));
+					localtime_r( &(flist.start[i]), &ts );
 					list.recordType 			= 0x04;
 					list.channel    			= chn;
 					list.deviceId   			= 0;
@@ -273,7 +276,8 @@ static int player_get_file_list(message_t *msg)
 					list.startTime.dwHour   	= ts.tm_hour;
 					list.startTime.dwMinute 	= ts.tm_min;
 					list.startTime.dwSecond 	= ts.tm_sec;
-					ts = *localtime( &(flist.stop[i]) );
+					memset(&ts, 0, sizeof(ts));
+					localtime_r( &(flist.stop[i]), &ts );
 					list.endTime.dwYear   		= ts.tm_year + 1900;
 					list.endTime.dwMonth 		= ts.tm_mon + 1;
 					list.endTime.dwDay  		= ts.tm_mday;
@@ -304,7 +308,8 @@ static int player_get_file_list(message_t *msg)
 					if( flist.stop[i] > end ) continue;
 					memcpy(p, &chn, sizeof(chn));
 					p += sizeof(chn);
-					ts = *localtime( &(flist.start[i]) );
+					memset(&ts, 0, sizeof(ts));
+					localtime_r( &(flist.start[i]), &ts );
 					temp		= 	((ts.tm_year + 1900) * 1e+10) +
 										((ts.tm_mon + 1) * 1e+8) +
 										( ts.tm_mday  * 1e+6 ) +
@@ -313,7 +318,8 @@ static int player_get_file_list(message_t *msg)
 										( ts.tm_sec );
 					memcpy(p, &temp, sizeof(temp));
 					p += sizeof(temp);
-					ts = *localtime(&(flist.stop[i]));
+					memset(&ts, 0, sizeof(ts));
+					localtime_r( &(flist.stop[i]), &ts );
 					temp		= 	((ts.tm_year + 1900) * 1e+10) +
 										((ts.tm_mon + 1) * 1e+8) +
 										( ts.tm_mday  * 1e+6 ) +
@@ -1524,6 +1530,7 @@ static void server_release_2(void)
 
 static void server_release_3(void)
 {
+	msg_free(&info.task.msg);
 	memset(&info, 0, sizeof(server_info_t));
 }
 
@@ -1569,11 +1576,11 @@ static int server_message_proc(void)
 	msg_init(&send_msg);
 	log_qcy(DEBUG_VERBOSE, "-----pop out from the PLAYER message queue: sender=%d, message=%x, ret=%d, head=%d, tail=%d", msg.sender, msg.message,
 			ret, message.head, message.tail);
-	msg_init(&info.task.msg);
-	msg_deep_copy(&info.task.msg, &msg);
 	switch(msg.message) {
 		case MSG_PLAYER_REQUEST:
-			memcpy(&info.task.msg.arg_pass, &msg.arg_pass, sizeof(message_arg_t));
+			msg_init(&info.task.msg);
+			msg_deep_copy(&info.task.msg, &msg);
+//			memcpy(&info.task.msg.arg_pass, &msg.arg_pass, sizeof(message_arg_t));
 			player_add_job(&msg);
 			break;
 		case MSG_PLAYER_START:
@@ -1589,6 +1596,8 @@ static int server_message_proc(void)
 			player_stop_audio(&msg);
 			break;
 		case MSG_MANAGER_EXIT:
+			msg_init(&info.task.msg);
+			msg_copy(&info.task.msg, &msg);
 			info.task.func = task_exit;
 			info.status = EXIT_INIT;
 			info.msg_lock = 0;
