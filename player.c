@@ -26,7 +26,9 @@
 #include <malloc.h>
 #include <miss.h>
 #include <malloc.h>
-
+#ifdef DMALLOC_ENABLE
+#include <dmalloc.h>
+#endif
 //program header
 #include "../../manager/manager_interface.h"
 #include "../../server/realtek/realtek_interface.h"
@@ -784,9 +786,10 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 			msg.arg_in.handler = init->session;
 			packet->info.frame_index = run->video_index;
 			packet->info.timestamp = start_time + run->start * 1000 + 1000;
+			packet->info.flag &= ~(0xF);
 			packet->info.flag |= FLAG_STREAM_TYPE_PLAYBACK << 11;
 			packet->info.flag |= FLAG_FRAME_TYPE_IFRAME << 0;
-			packet->info.flag |= FLAG_RESOLUTION_VIDEO_720P << 17;
+			packet->info.flag |= FLAG_RESOLUTION_VIDEO_1080P << 17;
 			packet->info.size  = (size + run->slen + run->plen + 8);
 			msg.arg = packet;
 			msg.arg_size = 0;
@@ -839,11 +842,12 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 			packet->info.frame_index = run->video_index;
 			packet->info.timestamp = start_time + run->start * 1000 + 1000;
 			packet->info.flag |= FLAG_STREAM_TYPE_PLAYBACK << 11;
+			packet->info.flag &= ~(0xF);
 		    if( iframe )// I frame
 		    	packet->info.flag |= FLAG_FRAME_TYPE_IFRAME << 0;
 		    else
 		    	packet->info.flag |= FLAG_FRAME_TYPE_PBFRAME << 0;
-		    packet->info.flag |= FLAG_RESOLUTION_VIDEO_720P << 17;
+		    packet->info.flag |= FLAG_RESOLUTION_VIDEO_1080P << 17;
 		    packet->info.size = size;
 			msg.arg = packet;
 			msg.arg_size = 0;
@@ -1224,7 +1228,7 @@ static int player_add_job( message_t* msg )
 			goto error;
 		}
 		misc_set_bit(&info.thread_start, id, 1);
-		jobs[id].status = RECORDER_THREAD_INITED;
+		jobs[id].status = PLAYER_THREAD_INITED;
 		jobs[id].session = init->session_id;
 		jobs[id].sid = id;
 		jobs[id].audio = init->audio;
