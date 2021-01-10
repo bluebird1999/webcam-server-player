@@ -39,10 +39,10 @@
 #include "../../server/recorder/recorder_interface.h"
 #include "../../server/miss/miss_interface.h"
 #include "../../server/device/device_interface.h"
+#include "../../server/video2/video2_interface.h"
+#include "../../server/kernel/kernel_interface.h"
 //server header
 #include "player.h"
-
-#include "../video2/video2_interface.h"
 #include "config.h"
 #include "player_interface.h"
 
@@ -129,7 +129,7 @@ static int player_get_file_date(message_t *msg)
 	unsigned int empty[2]={0,0};
 	unsigned int num = 0, len = 0, cmd, all = 0, temp;
 	char *data = NULL;
-	unsigned long long int init = 0;
+	unsigned long long int init = 0, stamp;
 	char newdate[MAX_SYSTEM_STRING_SIZE];
     /********message body********/
 	msg_init(&send_msg);
@@ -226,7 +226,7 @@ static int player_get_file_list(message_t *msg)
 	unsigned char *p = NULL;
 	unsigned int cmd, all = 0, num =0, len = 0;
 	struct tm  ts={0};
-	unsigned long long int start,end, temp, chn;
+	unsigned long long int start,end, temp, chn, stamp;
 	message_t send_msg;
     /********message body********/
 	msg_init(&send_msg);
@@ -268,7 +268,8 @@ static int player_get_file_list(message_t *msg)
 					if( flist.start[i] < start ) continue;
 					if( flist.stop[i] > end ) continue;
 					memset(&ts, 0, sizeof(ts));
-					localtime_r( &(flist.start[i]), &ts );
+					stamp = flist.start[i] - ( (_config_.timezone - 80) * 360);
+					localtime_r( &stamp, &ts );
 					list.recordType 			= 0x04;
 					list.channel    			= chn;
 					list.deviceId   			= 0;
@@ -279,7 +280,8 @@ static int player_get_file_list(message_t *msg)
 					list.startTime.dwMinute 	= ts.tm_min;
 					list.startTime.dwSecond 	= ts.tm_sec;
 					memset(&ts, 0, sizeof(ts));
-					localtime_r( &(flist.stop[i]), &ts );
+					stamp = flist.stop[i] - ( (_config_.timezone - 80) * 360);
+					localtime_r( &stamp, &ts );
 					list.endTime.dwYear   		= ts.tm_year + 1900;
 					list.endTime.dwMonth 		= ts.tm_mon + 1;
 					list.endTime.dwDay  		= ts.tm_mday;
@@ -311,7 +313,8 @@ static int player_get_file_list(message_t *msg)
 					memcpy(p, &chn, sizeof(chn));
 					p += sizeof(chn);
 					memset(&ts, 0, sizeof(ts));
-					localtime_r( &(flist.start[i]), &ts );
+					stamp = flist.start[i] - ( (_config_.timezone - 80) * 360);
+					localtime_r( &stamp, &ts );
 					temp		= 	((ts.tm_year + 1900) * 1e+10) +
 										((ts.tm_mon + 1) * 1e+8) +
 										( ts.tm_mday  * 1e+6 ) +
@@ -321,7 +324,8 @@ static int player_get_file_list(message_t *msg)
 					memcpy(p, &temp, sizeof(temp));
 					p += sizeof(temp);
 					memset(&ts, 0, sizeof(ts));
-					localtime_r( &(flist.stop[i]), &ts );
+					stamp = flist.stop[i] - ( (_config_.timezone - 80) * 360);
+					localtime_r( &stamp, &ts );
 					temp		= 	((ts.tm_year + 1900) * 1e+10) +
 										((ts.tm_mon + 1) * 1e+8) +
 										( ts.tm_mday  * 1e+6 ) +
@@ -428,8 +432,8 @@ static void *player_picture_func(void *arg)
 			memset( fname, 0 ,sizeof(fname));
 			memset( start_str, 0, sizeof(start_str));
 			memset( stop_str, 0, sizeof(stop_str));
-			time_stamp_to_date( begin[i], start_str);
-			time_stamp_to_date( end[i], stop_str);
+			time_stamp_to_date_with_zone( begin[i], start_str, 80, _config_.timezone);
+			time_stamp_to_date_with_zone( end[i], stop_str, 80, _config_.timezone);
 			sprintf( fname, "%s%s-%s_%s.jpg",config.profile.path, config.profile.prefix, start_str, stop_str);
 	        fp = fopen(fname, "rb");
 	        if (fp == NULL) {
@@ -535,11 +539,11 @@ int player_read_file_list(char *path)
 		memset(name, 0, sizeof(name));
 		memcpy(name, p, 14);
 		long long int st,ed;
-		st = time_date_to_stamp( name );
+		st = time_date_to_stamp_with_zone( name, 80, _config_.timezone );
 		p+=15;
 		memset(name, 0, sizeof(name));
 		memcpy(name, p, 14);
-		ed = time_date_to_stamp( name );
+		ed = time_date_to_stamp_with_zone( name, 80, _config_.timezone);
 		if( st >= ed ) {
 			memset(name, 0, sizeof(name));
 			sprintf(name, "%s%s", path, namelist[index]->d_name);
@@ -734,6 +738,8 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 	message_t msg;
 	av_data_info_t	info;
 	int sample_time;
+	av_packet_t *packet = NULL;
+	//**************************************
     if( !run->mp4_file ) return -1;
     if( run->video_index >= run->video_frame_num) return -1;
     sample_time = MP4GetSampleTime( run->mp4_file, run->video_track, run->video_index );
@@ -742,7 +748,8 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
     ret = MP4ReadSample( run->mp4_file, run->video_track, run->video_index,
     		&data,&size,&start_time,&duration,&offset,&iframe);
     if( !ret ) {
-    	if(data) free(data);
+    	if(data)
+    		free(data);
     	run->video_index++;
     	return -1;
     }
@@ -760,7 +767,7 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 				return -1;
 			}
 		}
-		if( !run->i_frame_read && iframe ) {
+		if( /*!run->i_frame_read && */ iframe ) {
 		    /********message body********/
 			unsigned char *mdata = NULL;
 			mdata = calloc( (size + run->slen + run->plen + 8), 1);
@@ -777,13 +784,20 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 			memcpy(p, data, size);
 			memcpy(p, NAL, 4);
 			log_qcy(DEBUG_SERIOUS, "first key frame.");
-			av_packet_t *packet = av_buffer_get_empty(buffer, &run->qos.buffer_overrun, &run->qos.buffer_success);
-			packet->data = mdata;
-			/***************************/
-			msg_init(&msg);
-			msg.message = MSG_MISS_VIDEO_DATA;
-			msg.arg_in.wolf = init->session_id;
-			msg.arg_in.handler = init->session;
+			if( _config_.memory_mode == MEMORY_MODE_SHARED ) {
+				packet = av_buffer_get_empty(buffer, &run->qos.buffer_overrun, &run->qos.buffer_success);
+				if( packet == NULL) {
+					log_qcy(DEBUG_INFO, "-------------PLAYER VIDEO buffer overrun!!!---");
+					free(mdata);
+					free(data);
+					return -1;
+				}
+				packet->data = mdata;
+			}
+			else {
+				packet = &(buffer->packet[0]);
+				packet->data = mdata;
+			}
 			packet->info.frame_index = run->video_index;
 			packet->info.timestamp = start_time + run->start * 1000 + 1000;
 			packet->info.flag &= ~(0xF);
@@ -791,18 +805,36 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 			packet->info.flag |= FLAG_FRAME_TYPE_IFRAME << 0;
 			packet->info.flag |= FLAG_RESOLUTION_VIDEO_1080P << 17;
 			packet->info.size  = (size + run->slen + run->plen + 8);
-			msg.arg = packet;
-			msg.arg_size = 0;
+			/***************************/
+			msg_init(&msg);
+			msg.message = MSG_MISS_VIDEO_DATA;
+			msg.arg_in.wolf = init->session_id;
+			msg.arg_in.handler = init->session;
+			if( _config_.memory_mode == MEMORY_MODE_SHARED ) {
+				msg.arg = packet;
+				msg.arg_size = 0;	//make sure this is 0 for non-deep-copy
+				msg.extra_size = 0;
+			}
+			else {
+				msg.arg = packet->data;
+				msg.arg_size = packet->info.size;
+				msg.extra = &(packet->info);
+				msg.extra_size = sizeof(packet->info);
+			}
 			ret = -1;
 			ret = server_miss_video_message(&msg);
 			if( (ret == MISS_LOCAL_ERR_MISS_GONE) || (ret == MISS_LOCAL_ERR_SESSION_GONE) ) {
-				av_packet_check(packet);
+	    		if( _config_.memory_mode == MEMORY_MODE_SHARED) {
+	    			av_packet_check(packet);
+	    		}
 				log_qcy(DEBUG_WARNING, "Player video ring buffer send failed due to non-existing miss server or session");
 				player_quit_all(init->tid);
 				log_qcy(DEBUG_WARNING, "----shut down player video miss stream due to session lost!------");
 			}
 			else if( ret == MISS_LOCAL_ERR_AV_NOT_RUN) {
-				av_packet_check(packet);
+	    		if( _config_.memory_mode == MEMORY_MODE_SHARED) {
+	    			av_packet_check(packet);
+	    		}
 				run->qos.failed_send[0]++;
 				if( run->qos.failed_send[0] > PLAYER_MAX_FAILED_SEND) {
 					run->qos.failed_send[0] = 0;
@@ -811,10 +843,15 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 				}
 			}
 			else if( ret == 0) {
-				av_packet_add(packet);
+				if( _config_.memory_mode == MEMORY_MODE_SHARED ) {
+					av_packet_add(packet);
+				}
 				run->qos.failed_send[0] = 0;
 			}
 			run->i_frame_read = 1;
+			if( _config_.memory_mode == MEMORY_MODE_DYNAMIC ) {
+				free(mdata);
+			}
 			free(data);
 		}
 		else {
@@ -832,13 +869,19 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 			data[1] = 0x00;
 			data[2] = 0x00;
 			data[3] = 0x01;
-			av_packet_t *packet = av_buffer_get_empty(buffer, &run->qos.buffer_overrun, &run->qos.buffer_success);
-			packet->data = data;
-			/********message body********/
-			msg_init(&msg);
-			msg.message = MSG_MISS_VIDEO_DATA;
-			msg.arg_in.wolf = init->session_id;
-			msg.arg_in.handler = init->session;
+			if( _config_.memory_mode == MEMORY_MODE_SHARED ) {
+				packet = av_buffer_get_empty(buffer, &run->qos.buffer_overrun, &run->qos.buffer_success);
+				if( packet == NULL) {
+					log_qcy(DEBUG_INFO, "-------------PLAYER VIDEO buffer overrun!!!---");
+					free(data);
+					return -1;
+				}
+				packet->data = data;
+			}
+			else {
+				packet = &(buffer->packet[0]);
+				packet->data = data;
+			}
 			packet->info.frame_index = run->video_index;
 			packet->info.timestamp = start_time + run->start * 1000 + 1000;
 			packet->info.flag |= FLAG_STREAM_TYPE_PLAYBACK << 11;
@@ -849,18 +892,36 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 		    	packet->info.flag |= FLAG_FRAME_TYPE_PBFRAME << 0;
 		    packet->info.flag |= FLAG_RESOLUTION_VIDEO_1080P << 17;
 		    packet->info.size = size;
-			msg.arg = packet;
-			msg.arg_size = 0;
+			/********message body********/
+			msg_init(&msg);
+			msg.message = MSG_MISS_VIDEO_DATA;
+			msg.arg_in.wolf = init->session_id;
+			msg.arg_in.handler = init->session;
+			if( _config_.memory_mode == MEMORY_MODE_SHARED ) {
+				msg.arg = packet;
+				msg.arg_size = 0;	//make sure this is 0 for non-deep-copy
+				msg.extra_size = 0;
+			}
+			else {
+				msg.arg = packet->data;
+				msg.arg_size = packet->info.size;
+				msg.extra = &(packet->info);
+				msg.extra_size = sizeof(packet->info);
+			}
 			ret = -1;
 			ret = server_miss_video_message(&msg);
 			if( (ret == MISS_LOCAL_ERR_MISS_GONE) || (ret == MISS_LOCAL_ERR_SESSION_GONE) ) {
-				av_packet_check(packet);
+	    		if( _config_.memory_mode == MEMORY_MODE_SHARED) {
+	    			av_packet_check(packet);
+	    		}
 				log_qcy(DEBUG_WARNING, "Player video ring buffer send failed due to non-existing miss server or session");
 				player_quit_all(init->tid);
 				log_qcy(DEBUG_WARNING, "----shut down player video miss stream due to session lost!------");
 			}
 			else if( ret == MISS_LOCAL_ERR_AV_NOT_RUN) {
-				av_packet_check(packet);
+	    		if( _config_.memory_mode == MEMORY_MODE_SHARED) {
+	    			av_packet_check(packet);
+	    		}
 				run->qos.failed_send[0]++;
 				if( run->qos.failed_send[0] > PLAYER_MAX_FAILED_SEND) {
 					run->qos.failed_send[0] = 0;
@@ -869,11 +930,16 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 				}
 			}
 			else if( ret == 0) {
-				av_packet_add(packet);
+	    		if( _config_.memory_mode == MEMORY_MODE_SHARED) {
+	    			av_packet_add(packet);
+	    		}
 				run->qos.failed_send[0] = 0;
 			}
 			run->i_frame_read = 1;
 			run->video_sync = start_time;
+			if( _config_.memory_mode == MEMORY_MODE_DYNAMIC ) {
+				free(data);
+			}
 		}
 		log_qcy(DEBUG_VERBOSE," data = %p,size=%d", data, size);
 	}
@@ -887,7 +953,7 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
     return 0;
 }
 
-static int player_get_audio_frame( player_init_t *init, player_run_t *run, av_packet_t *buffer
+static int player_get_audio_frame( player_init_t *init, player_run_t *run, av_buffer_t *buffer
 		, int speed)
 {
     unsigned char *data = NULL;
@@ -902,6 +968,8 @@ static int player_get_audio_frame( player_init_t *init, player_run_t *run, av_pa
 	message_t msg;
 	av_data_info_t	info;
 	int sample_time;
+	av_packet_t *packet = NULL;
+	//*************************************
     if( !run->mp4_file ) return -1;
     if( run->audio_index >= run->audio_frame_num) return -1;
     sample_time = MP4GetSampleTime( run->mp4_file, run->audio_track, run->audio_index );
@@ -928,37 +996,61 @@ static int player_get_audio_frame( player_init_t *init, player_run_t *run, av_pa
 				return -1;
 			}
 		}
-		av_packet_t *packet = av_buffer_get_empty(buffer, &run->qos.buffer_overrun, &run->qos.buffer_success);
-		packet->data = data;
+		if( _config_.memory_mode == MEMORY_MODE_SHARED ) {
+			packet = av_buffer_get_empty(buffer, &run->qos.buffer_overrun, &run->qos.buffer_success);
+			if( packet == NULL) {
+				log_qcy(DEBUG_INFO, "-------------PLAYER AUDIO buffer overrun!!!---");
+				free(data);
+				return -1;
+			}
+			packet->data = data;
+		}
+		else {
+			packet = &(buffer->packet[0]);
+			packet->data = data;
+		}
+		packet->info.frame_index = run->audio_index;
+		packet->info.timestamp = start_time + run->start * 1000 + 1000;
+		packet->info.flag = FLAG_AUDIO_SAMPLE_8K << 3 | FLAG_AUDIO_DATABITS_16 << 7 | FLAG_AUDIO_CHANNEL_MONO << 9 |  FLAG_RESOLUTION_AUDIO_DEFAULT << 17;
+		packet->info.size = size;
 		/********message body********/
 		msg_init(&msg);
 		msg.message = MSG_MISS_AUDIO_DATA;
 		msg.sender = msg.receiver = SERVER_PLAYER;
 		msg.arg_in.wolf = init->session_id;
 		msg.arg_in.handler = init->session;
-		packet->info.frame_index = run->audio_index;
-		packet->info.timestamp = start_time + run->start * 1000 + 1000;
-		packet->info.flag = FLAG_AUDIO_SAMPLE_8K << 3 | FLAG_AUDIO_DATABITS_16 << 7 | FLAG_AUDIO_CHANNEL_MONO << 9 |  FLAG_RESOLUTION_AUDIO_DEFAULT << 17;
-		packet->info.size = size;
-		msg.arg = packet;
-		msg.arg_size = 0;
-		pthread_rwlock_rdlock(&ilock);
+		if( _config_.memory_mode == MEMORY_MODE_SHARED ) {
+			msg.arg = packet;
+			msg.arg_size = 0;	//make sure this is 0 for non-deep-copy
+			msg.extra_size = 0;
+		}
+		else {
+			msg.arg = packet->data;
+			msg.arg_size = packet->info.size;
+			msg.extra = &(packet->info);
+			msg.extra_size = sizeof(packet->info);
+		}
 		ret = -1;
 	    if( jobs[init->tid].audio == 1 ) {
 			ret = server_miss_audio_message(&msg);
 	    }
 		if( (ret == MISS_LOCAL_ERR_MISS_GONE) || (ret == MISS_LOCAL_ERR_SESSION_GONE) ) {
-			av_packet_check(packet);
+			if( _config_.memory_mode == MEMORY_MODE_SHARED ) {
+				av_packet_check(packet);
+			}
 			log_qcy(DEBUG_WARNING, "Player audio ring buffer send failed due to non-existing miss server or session");
 			log_qcy(DEBUG_WARNING, "----shut down player audio miss stream due to session lost!------");
 			jobs[init->tid].audio = 0;
 		}
 		else if( ret==0 ) {
-			av_packet_add(packet);
+			if( _config_.memory_mode == MEMORY_MODE_SHARED ) {
+				av_packet_add(packet);
+			}
 		}
-		pthread_rwlock_unlock(&ilock);
-		/****************************/
 		run->audio_sync = start_time;
+		if( _config_.memory_mode == MEMORY_MODE_DYNAMIC ) {
+			free(data);
+		}
 	}
 	if( (speed == 1) || (speed == 2) ||
 			(speed == 4) || (speed == 0) ) {
@@ -988,8 +1080,8 @@ static int player_open_mp4(player_init_t *init, player_run_t *run, player_list_n
 		memset( run->file_path, 0 ,sizeof(run->file_path));
 		memset( start_str, 0, sizeof(start_str));
 		memset( stop_str, 0, sizeof(stop_str));
-		time_stamp_to_date( run->current->start, start_str);
-		time_stamp_to_date( run->current->stop, stop_str);
+		time_stamp_to_date_with_zone( run->current->start, start_str, 80, _config_.timezone);
+		time_stamp_to_date_with_zone( run->current->stop, stop_str, 80, _config_.timezone);
 		sprintf( run->file_path, "%s%s-%s_%s.mp4",config.profile.path, config.profile.prefix, start_str, stop_str);
 	}
 	else
@@ -1111,7 +1203,7 @@ static int player_main(player_init_t *init, player_run_t *run, av_buffer_t *vbuf
 	if( !run->vstream_wait )
 		ret_video = player_get_video_frame(init, run, vbuffer, speed);
 	if( !run->astream_wait )
-		ret_audio = player_get_audio_frame(init, run, abuffer,speed);
+		ret_audio = player_get_audio_frame(init, run, abuffer, speed);
 	if( run->i_frame_read ) {
 		if( run->video_sync > run->audio_sync + DEFAULT_SYNC_DURATION ) {
 			run->vstream_wait = 1;
@@ -1367,6 +1459,7 @@ static int player_thread_destroy( int tid, player_run_t *run )
 	if( run->mp4_file ) {
 		MP4Close( run->mp4_file, 0);
 		run->mp4_file = NULL;
+		log_qcy(DEBUG_INFO, "------closed file=======%s", run->file_path);
 	}
 	pthread_rwlock_wrlock(&ilock);
 	misc_set_bit( &info.thread_start, tid, 0);
@@ -1630,12 +1723,8 @@ static int server_message_proc(void)
 				pthread_rwlock_wrlock(&ilock);
 				if( flist.num >= MAX_FILE_NUM )
 					break;
-	        	memset(name, 0, sizeof(name));
-	        	memcpy(name, (char*)(msg.arg), 14);
-	        	flist.start[flist.num] = time_date_to_stamp( name );// - _config_.timezone * 3600;
-	        	memset(name, 0, sizeof(name));
-	        	memcpy(name, &( ((char*)msg.arg)[14] ), 14);
-	        	flist.stop[flist.num] = time_date_to_stamp( name );// - _config_.timezone * 3600;
+	        	memcpy( &flist.start[flist.num], (unsigned long long*)msg.arg, sizeof(flist.start[flist.num]));
+	        	memcpy( &flist.stop[flist.num], (unsigned long long*)msg.extra, sizeof(flist.stop[flist.num]));
 	        	flist.num++;
 	        	pthread_rwlock_unlock(&ilock);
 			}
@@ -1702,6 +1791,7 @@ static int server_message_proc(void)
 		case MSG_RECORDER_CLEAN_DISK_START:
 			player_quit_all(-1);
 			misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_DEVICE_SD, 0);
+			misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_FILE_LIST, 0);
 			info.status = STATUS_NONE;
 			info.tick = 10;//no-request to device
 			break;
@@ -1709,6 +1799,12 @@ static int server_message_proc(void)
 			info.tick = 0;	//restart the device check
 			misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_DEVICE_SD, 1); //fake device response
 			hotplug = 0;
+			break;
+		case MSG_KERNEL_TIMEZONE_CHANGE:
+			player_quit_all(-1);
+			misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_FILE_LIST, 0);
+			info.status = STATUS_NONE;
+			info.tick = 10;//no-request to device
 			break;
 		default:
 			log_qcy(DEBUG_SERIOUS, "not processed message = %x", msg.message);
@@ -1884,7 +1980,7 @@ static void *server_func(void)
     signal(SIGTERM, server_thread_termination);
 	misc_set_thread_name("server_player");
 	pthread_detach(pthread_self());
-	msg_buffer_init2(&message, MSG_BUFFER_OVERFLOW_NO, &mutex);
+	msg_buffer_init2(&message, _config_.msg_overrun, &mutex);
 	info.init = 1;
 	//default task
 	info.task.func = task_default;
