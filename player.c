@@ -199,6 +199,9 @@ static int player_get_file_date(message_t *msg)
 				}
 			}
 		}
+		else {
+			goto send;
+		}
 		send_msg.arg = data;
 		send_msg.arg_size = all;
 		send_msg.result = 0;
@@ -209,6 +212,7 @@ static int player_get_file_date(message_t *msg)
 	}
 send:
 	pthread_rwlock_unlock(&ilock);
+	cmd = msg->arg_in.duck;
 	empty[0] = cmd;
 	send_msg.arg = empty;
 	send_msg.arg_size = sizeof(empty);
@@ -268,7 +272,7 @@ static int player_get_file_list(message_t *msg)
 					if( flist.start[i] < start ) continue;
 					if( flist.stop[i] > end ) continue;
 					memset(&ts, 0, sizeof(ts));
-					stamp = flist.start[i] - ( (_config_.timezone - 80) * 360);
+					stamp = flist.start[i] /*- ( (_config_.timezone - 80) * 360)*/;
 					localtime_r( &stamp, &ts );
 					list.recordType 			= 0x04;
 					list.channel    			= chn;
@@ -280,7 +284,7 @@ static int player_get_file_list(message_t *msg)
 					list.startTime.dwMinute 	= ts.tm_min;
 					list.startTime.dwSecond 	= ts.tm_sec;
 					memset(&ts, 0, sizeof(ts));
-					stamp = flist.stop[i] - ( (_config_.timezone - 80) * 360);
+					stamp = flist.stop[i] /*- ( (_config_.timezone - 80) * 360)*/;
 					localtime_r( &stamp, &ts );
 					list.endTime.dwYear   		= ts.tm_year + 1900;
 					list.endTime.dwMonth 		= ts.tm_mon + 1;
@@ -313,7 +317,7 @@ static int player_get_file_list(message_t *msg)
 					memcpy(p, &chn, sizeof(chn));
 					p += sizeof(chn);
 					memset(&ts, 0, sizeof(ts));
-					stamp = flist.start[i] - ( (_config_.timezone - 80) * 360);
+					stamp = flist.start[i] /*- ( (_config_.timezone - 80) * 360)*/;
 					localtime_r( &stamp, &ts );
 					temp		= 	((ts.tm_year + 1900) * 1e+10) +
 										((ts.tm_mon + 1) * 1e+8) +
@@ -324,7 +328,7 @@ static int player_get_file_list(message_t *msg)
 					memcpy(p, &temp, sizeof(temp));
 					p += sizeof(temp);
 					memset(&ts, 0, sizeof(ts));
-					stamp = flist.stop[i] - ( (_config_.timezone - 80) * 360);
+					stamp = flist.stop[i] /*- ( (_config_.timezone - 80) * 360)*/;
 					localtime_r( &stamp, &ts );
 					temp		= 	((ts.tm_year + 1900) * 1e+10) +
 										((ts.tm_mon + 1) * 1e+8) +
@@ -344,9 +348,13 @@ static int player_get_file_list(message_t *msg)
 			pthread_rwlock_unlock(&ilock);
 			return 0;
 		}
+		else {
+			goto send;
+		}
 	}
 send:
 	pthread_rwlock_unlock(&ilock);
+	cmd = msg->arg_in.duck;
 	empty[0] = cmd;
 	send_msg.arg = empty;
 	send_msg.arg_size = sizeof(empty);
@@ -437,7 +445,7 @@ static void *player_picture_func(void *arg)
 			sprintf( fname, "%s%s-%s_%s.jpg",config.profile.path, config.profile.prefix, start_str, stop_str);
 	        fp = fopen(fname, "rb");
 	        if (fp == NULL) {
-	            log_qcy(DEBUG_WARNING, "fopen error %s not exist!\n", fname);
+	            log_qcy(DEBUG_SERIOUS, "fopen error %s not exist!\n", fname);
 	            continue;
 	        }
 	        if (0 != fseek(fp, 0, SEEK_END)) {
@@ -787,7 +795,7 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 			if( _config_.memory_mode == MEMORY_MODE_SHARED ) {
 				packet = av_buffer_get_empty(buffer, &run->qos.buffer_overrun, &run->qos.buffer_success);
 				if( packet == NULL) {
-					log_qcy(DEBUG_INFO, "-------------PLAYER VIDEO buffer overrun!!!---");
+					log_qcy(DEBUG_SERIOUS, "-------------PLAYER VIDEO buffer overrun!!!---");
 					free(mdata);
 					free(data);
 					return -1;
@@ -872,7 +880,7 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 			if( _config_.memory_mode == MEMORY_MODE_SHARED ) {
 				packet = av_buffer_get_empty(buffer, &run->qos.buffer_overrun, &run->qos.buffer_success);
 				if( packet == NULL) {
-					log_qcy(DEBUG_INFO, "-------------PLAYER VIDEO buffer overrun!!!---");
+					log_qcy(DEBUG_SERIOUS, "-------------PLAYER VIDEO buffer overrun!!!---");
 					free(data);
 					return -1;
 				}

@@ -21,7 +21,7 @@
 //#define PLAYBACK_RESP_FILEREADERROR_TEMPLATE "{\"id\":%d, \"status\":\"readerror\", \"starttime\":%d}"
 //#define PLAYBACK_RESP_ERRREQUEST_TEMPLATE "{\"id\":%d, \"status\":\"errorrequest\", \"starttime\":%d}"
 
-#define		MAX_FILE_NUM							512
+#define		MAX_FILE_NUM							1440*7*2
 #define		PLAYER_INIT_CONDITION_NUM				5
 #define		PLAYER_INIT_CONDITION_CONFIG			0
 #define		PLAYER_INIT_CONDITION_MIIO_TIME			1
