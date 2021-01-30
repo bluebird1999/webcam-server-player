@@ -111,6 +111,7 @@ static int player_set_property(message_t *msg)
 		else {
 			int temp = *((int*)(msg->arg));
 			jobs[id].init.speed = temp;
+			jobs[id].speed = temp;
 		}
 	}
 send:
@@ -251,7 +252,7 @@ static int player_get_file_list(message_t *msg)
 	else {
 		for (i = 0; i < flist.num; i++) {
 			if( flist.start[i] < start ) continue;
-			if( flist.stop[i] > end ) continue;
+			if( flist.stop[i] > end) continue;
 			num++;
 		}
 		if( num > 0) {
@@ -313,7 +314,7 @@ static int player_get_file_list(message_t *msg)
 				p = data + sizeof(cmd) + sizeof(len) + sizeof(num);
 				for (i = 0; i < flist.num; i++) {
 					if( flist.start[i] < start ) continue;
-					if( flist.stop[i] > end ) continue;
+					if( flist.stop[i] > end) continue;
 					memcpy(p, &chn, sizeof(chn));
 					p += sizeof(chn);
 					memset(&ts, 0, sizeof(ts));
@@ -1233,15 +1234,15 @@ static int player_main(player_init_t *init, player_run_t *run, av_buffer_t *vbuf
 	if( ret_video && ret_audio ) {
 		goto next_stream;
 	}
-	if( init->speed == 0 )
+	if( speed == 0 )
 		usleep(60000);
-	else if( init->speed == 1 )
+	else if( speed == 1 )
 		usleep(30000);
-	else if( init->speed == 2 )
+	else if( speed == 2 )
 		usleep(10000);
-	else if( init->speed == 4 )
+	else if( speed == 4 )
 		usleep(3000);
-	else if( init->speed == 16)
+	else if( speed == 16)
 		usleep(2000);
 	return 0;
 next_stream:
@@ -1808,12 +1809,12 @@ static int server_message_proc(void)
 			misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_DEVICE_SD, 1); //fake device response
 			hotplug = 0;
 			break;
-		case MSG_KERNEL_TIMEZONE_CHANGE:
-			player_quit_all(-1);
-			misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_FILE_LIST, 0);
-			info.status = STATUS_NONE;
-			info.tick = 10;//no-request to device
-			break;
+//		case MSG_KERNEL_TIMEZONE_CHANGE:
+//			player_quit_all(-1);
+//			misc_set_bit( &info.init_status, PLAYER_INIT_CONDITION_FILE_LIST, 0);
+//			info.status = STATUS_NONE;
+//			info.tick = 10;//no-request to device
+//			break;
 		default:
 			log_qcy(DEBUG_SERIOUS, "not processed message = %x", msg.message);
 			break;
