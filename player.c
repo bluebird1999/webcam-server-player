@@ -77,7 +77,7 @@ static void server_thread_termination(void);
 //specific
 static int player_main(player_init_t *init, player_run_t *run, av_buffer_t *vbuffer, av_buffer_t *abuffer, player_list_node_t *fhead, int speed);
 static int *player_func(void* arg);
-static int find_job_session(int session);
+static int find_job_session(void *session);
 static void *player_picture_func(void *arg);
 
 /*
@@ -101,7 +101,7 @@ static int player_set_property(message_t *msg)
 	send_msg.arg_in.cat = msg->arg_in.cat;
 	/****************************/
 	pthread_rwlock_rdlock(&ilock);
-	id = find_job_session( msg->arg_in.wolf );
+	id = find_job_session( msg->arg_in.handler );
 	if( id == -1) {
 		ret = -1;
 		goto send;
@@ -814,6 +814,8 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 			packet->info.flag |= FLAG_FRAME_TYPE_IFRAME << 0;
 			packet->info.flag |= FLAG_RESOLUTION_VIDEO_1080P << 17;
 			packet->info.size  = (size + run->slen + run->plen + 8);
+		    packet->info.source = SOURCE_PLAYER;
+		    packet->info.channel = CHANNEL_VIDEO_PLAYER_0;
 			/***************************/
 			msg_init(&msg);
 			msg.message = MSG_MISS_VIDEO_DATA;
@@ -901,6 +903,8 @@ static int player_get_video_frame(player_init_t *init, player_run_t *run, av_buf
 		    	packet->info.flag |= FLAG_FRAME_TYPE_PBFRAME << 0;
 		    packet->info.flag |= FLAG_RESOLUTION_VIDEO_1080P << 17;
 		    packet->info.size = size;
+		    packet->info.source = SOURCE_PLAYER;
+		    packet->info.channel = CHANNEL_VIDEO_PLAYER_0;
 			/********message body********/
 			msg_init(&msg);
 			msg.message = MSG_MISS_VIDEO_DATA;
@@ -1022,6 +1026,8 @@ static int player_get_audio_frame( player_init_t *init, player_run_t *run, av_bu
 		packet->info.timestamp = start_time + run->start * 1000 + 1000;
 		packet->info.flag = FLAG_AUDIO_SAMPLE_8K << 3 | FLAG_AUDIO_DATABITS_16 << 7 | FLAG_AUDIO_CHANNEL_MONO << 9 |  FLAG_RESOLUTION_AUDIO_DEFAULT << 17;
 		packet->info.size = size;
+	    packet->info.source = SOURCE_PLAYER;
+	    packet->info.channel = CHANNEL_AUDIO_PLAYER_0;
 		/********message body********/
 		msg_init(&msg);
 		msg.message = MSG_MISS_AUDIO_DATA;
@@ -1253,12 +1259,12 @@ next_stream:
 	return ret;
 }
 
-static int find_job_session(int session)
+static int find_job_session(void* session)
 {
 	int i;
 	for( i=0; i<MAX_SESSION_NUMBER; i++ ) {
 		if( jobs[i].status > PLAYER_THREAD_NONE ) {
-			if( jobs[i].init.session_id == session) {
+			if( jobs[i].init.session == session) {
 				return i;
 			}
 		}
@@ -1291,7 +1297,7 @@ static int player_add_job( message_t* msg )
 		file_ret = PLAYER_FILENOTFOUND;
 		goto error;
 	}
-	id = find_job_session( init->session_id );
+	id = find_job_session( init->session );
 	if( id != -1) {
 		same = 1;
 	}
@@ -1308,7 +1314,6 @@ static int player_add_job( message_t* msg )
 		memset( &(jobs[id].init), 0, sizeof(player_init_t));
 		memcpy( &(jobs[id].init), init, sizeof(player_init_t));
 		jobs[id].init.tid = id;
-		misc_set_bit(&info.thread_start, id, 1);
 		jobs[id].status = PLAYER_THREAD_INITED;
 		jobs[id].audio = init->audio;
 		jobs[id].run = 1;
@@ -1316,7 +1321,7 @@ static int player_add_job( message_t* msg )
 		jobs[id].restart = 1;
 		jobs[id].exit = 0;
 		log_qcy(DEBUG_INFO, "player thread updated successful!");
-		send_msg.arg_in.cat = 1;
+//		send_msg.arg_in.cat = 1;
 	}
 	else {
 		//start the thread
@@ -1328,7 +1333,6 @@ static int player_add_job( message_t* msg )
 			log_qcy(DEBUG_SERIOUS, "player thread create error! ret = %d",ret);
 			goto error;
 		}
-		misc_set_bit(&info.thread_start, id, 1);
 		jobs[id].status = PLAYER_THREAD_INITED;
 		jobs[id].session = init->session_id;
 		jobs[id].sid = id;
@@ -1338,11 +1342,11 @@ static int player_add_job( message_t* msg )
 		jobs[id].restart = 0;
 		jobs[id].exit = 0;
 		log_qcy(DEBUG_INFO, "player thread create successful!");
-		send_msg.arg_in.cat = 0;
+//		send_msg.arg_in.cat = 0;
 	}
 	pthread_rwlock_unlock(&ilock);
-	send_msg.result = 0;
-	ret = manager_common_send_message(msg->receiver, &send_msg);
+//	send_msg.result = 0;
+//	ret = manager_common_send_message(msg->receiver, &send_msg);
 	return ret;
 error:
 	pthread_rwlock_unlock(&ilock);
@@ -1365,7 +1369,7 @@ static int player_start_job( message_t* msg )
 	send_msg.sender = send_msg.receiver = SERVER_PLAYER;
 	/***************************/
 	if( config.profile.enable == 0 ) goto error;
-	id = find_job_session( msg->arg_in.wolf );
+	id = find_job_session( msg->arg_in.handler );
 	if( id==-1 ) goto error;
 	pthread_rwlock_wrlock(&ilock);
 	jobs[id].run = 1;
@@ -1392,13 +1396,13 @@ static int player_stop_job( message_t* msg )
 	send_msg.sender = send_msg.receiver = SERVER_PLAYER;
 	/***************************/
 	if( config.profile.enable == 0 ) goto error;
-	id = find_job_session( msg->arg_in.wolf );
+	id = find_job_session( msg->arg_in.handler );
 	if( id==-1 ) goto error;
 	pthread_rwlock_wrlock(&ilock);
 	jobs[id].exit = 1;
 	pthread_rwlock_unlock(&ilock);
-	send_msg.result = 0;
-	ret = manager_common_send_message(msg->receiver, &send_msg);
+//	send_msg.result = 0;
+//	ret = manager_common_send_message(msg->receiver, &send_msg);
 	return ret;
 error:
 	send_msg.result = -1;
@@ -1419,7 +1423,7 @@ static int player_start_audio( message_t* msg )
 	send_msg.sender = send_msg.receiver = SERVER_PLAYER;
 	/***************************/
 	if( config.profile.enable == 0 ) goto error;
-	id = find_job_session( msg->arg_in.wolf );
+	id = find_job_session( msg->arg_in.handler );
 	if( id==-1 ) goto error;
 	if( jobs[id].status== PLAYER_THREAD_NONE) goto error;
 	pthread_rwlock_wrlock(&ilock);
@@ -1447,7 +1451,7 @@ static int player_stop_audio( message_t* msg )
 	send_msg.sender = send_msg.receiver = SERVER_PLAYER;
 	/***************************/
 	if( config.profile.enable == 0 ) goto error;
-	id = find_job_session( msg->arg_in.wolf );
+	id = find_job_session( msg->arg_in.handler );
 	if( id==-1 ) goto error;
 	if( jobs[id].status == PLAYER_THREAD_NONE) goto error;
 	pthread_rwlock_wrlock(&ilock);
@@ -1464,7 +1468,7 @@ error:
 
 static int player_thread_destroy( int tid, player_run_t *run )
 {
-	int ret=0, ret1;
+	int ret=0;
 	if( run->mp4_file ) {
 		MP4Close( run->mp4_file, 0);
 		run->mp4_file = NULL;
@@ -1507,6 +1511,22 @@ static int *player_func(void* arg)
 	misc_set_bit( &info.thread_start, tid, 1);
 	pthread_rwlock_unlock(&ilock);
 	status = PLAYER_THREAD_INITED;
+	/*
+	 * send back player request success response here
+	 *
+	 */
+    /********message body********/
+	msg_init(&msg);
+	msg.message = MSG_PLAYER_REQUEST_ACK;
+	msg.sender = msg.receiver = SERVER_PLAYER;
+	msg.arg_in.tiger = PLAYER_FILEFOUND;
+	msg.arg_in.cat = 0;	//restart bit
+	msg.result = 0;
+	msg.arg_pass.cat = MISS_ASYN_PLAYER_REQUEST;
+	msg.arg_pass.wolf = init.session_id;
+	msg.arg_pass.handler = init.session;
+	ret = manager_common_send_message(SERVER_MISS, &msg);
+	/***************************/
     while( 1 ) {
     	pthread_rwlock_wrlock(&ilock);
     	if( info.exit || jobs[tid].exit ) {
@@ -1533,6 +1553,22 @@ static int *player_func(void* arg)
     		}
     		status = PLAYER_THREAD_INITED;
     		jobs[tid].restart = 0;
+    		/*
+    		 * send back player request success response here (restart)
+    		 *
+    		 */
+    	    /********message body********/
+    		msg_init(&msg);
+    		msg.message = MSG_PLAYER_REQUEST_ACK;
+    		msg.sender = msg.receiver = SERVER_PLAYER;
+    		msg.arg_in.tiger = PLAYER_FILEFOUND;
+    		msg.arg_in.cat = 1;	//restart bit
+    		msg.result = 0;
+    		msg.arg_pass.cat = MISS_ASYN_PLAYER_REQUEST;
+    		msg.arg_pass.wolf = init.session_id;
+    		msg.arg_pass.handler = init.session;
+    		ret = manager_common_send_message(SERVER_MISS, &msg);
+    		/***************************/
     	}
     	pthread_rwlock_unlock(&ilock);
     	switch( status ) {
@@ -1596,6 +1632,17 @@ static int *player_func(void* arg)
 		msg.arg_pass.handler = init.session;
 		ret = manager_common_send_message(SERVER_MISS,   &msg);
 		/****************************/
+    }
+    else {
+        /********message body********/
+    	msg_init(&msg);
+    	msg.message = MSG_PLAYER_STOP_ACK;
+    	msg.sender = msg.receiver = SERVER_PLAYER;
+		msg.arg_pass.cat = MISS_ASYN_PLAYER_STOP;
+		msg.arg_pass.wolf = init.session_id;
+		msg.arg_pass.handler = init.session;
+		ret = manager_common_send_message(SERVER_MISS,   &msg);
+    	/***************************/
     }
     //release
     player_node_clear(&fhead);
